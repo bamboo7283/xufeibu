@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>续费簿</title>
+<meta name="description" content="记录每个 App 会员的套餐、续费日期和金额，到期前提醒。">
+<meta name="theme-color" content="#f5f3ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151513" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="续费簿">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div id="app" class="app"></div>
+<dialog id="sheet" class="sheet" aria-modal="true"></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<noscript><p style="padding:24px">续费簿需要开启 JavaScript 才能使用。</p></noscript>
+</body>
+</html>
