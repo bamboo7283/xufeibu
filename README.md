@@ -1,4 +1,4 @@
-# 续费簿
+# 时笺
 
 在线地址：https://bamboo7283.github.io/xufeibu/
 
@@ -9,7 +9,7 @@
 | 文件 | 作用 |
 | --- | --- |
 | `index.html` | 页面入口 |
-| `styles.css` | 样式（来自「续费簿设计系统」的颜色、字体、卡片） |
+| `styles.css` | 样式（清新的毛玻璃风格、深浅色模式、动效） |
 | `app.js` | 全部功能 |
 | `sw.js` | 离线缓存，让它像 App 一样没网也能打开 |
 | `manifest.webmanifest`、`icons/` | 添加到主屏幕后的名字和图标 |

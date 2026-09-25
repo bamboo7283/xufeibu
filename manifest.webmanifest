@@ -1,6 +1,6 @@
 {
-  "name": "续费簿",
-  "short_name": "续费簿",
+  "name": "时笺",
+  "short_name": "时笺",
   "description": "记录每个 App 会员的套餐、续费日期和金额，到期前提醒。",
   "lang": "zh-Hans",
   "start_url": "./",

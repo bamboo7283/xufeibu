@@ -225,7 +225,7 @@ function render(opts = {}) {
 
   app.innerHTML = `
     <header class="top">
-      <div class="top-title"><h1>续费簿</h1><p class="date">${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}</p></div>
+      <div class="top-title"><h1>时笺</h1><p class="date">${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}</p></div>
       <div class="top-actions">
         <button class="btn btn-primary" data-act="add" aria-label="添加会员">${icon('plus')}<span class="btn-label">添加会员</span></button>
         <div class="menu-wrap">
@@ -668,7 +668,7 @@ function veventFor(s) {
   ];
 }
 function buildICS(list) {
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//XuFeiBu//Renewals//ZH', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:续费簿']
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//XuFeiBu//Renewals//ZH', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:时笺']
     .concat(...list.map(veventFor), ['END:VCALENDAR']);
   return lines.map(icsFold).join('\r\n') + '\r\n';
 }
@@ -697,7 +697,7 @@ function downloadBlob(blob, filename) {
 
 /* ================= backup ================= */
 async function exportBackup() {
-  const name = `续费簿备份-${todayISO()}.json`;
+  const name = `时笺备份-${todayISO()}.json`;
   const blob = new Blob([JSON.stringify({ app: 'xufeibu', exportedAt: nowStamp(), ...state }, null, 1)], { type: 'application/json' });
   const file = typeof File === 'function' ? new File([blob], name, { type: 'application/json' }) : null;
   if (isIOS() && file && navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -714,7 +714,7 @@ function importBackup() {
     const file = inp.files && inp.files[0];
     if (!file) return;
     let incoming;
-    try { incoming = normalize(JSON.parse(await file.text())); } catch (e) { toast('这个文件不是续费簿的备份', 'alert'); return; }
+    try { incoming = normalize(JSON.parse(await file.text())); } catch (e) { toast('这个文件不是时笺的备份', 'alert'); return; }
     if (!incoming.subs.length && !incoming.categories.length) { toast('备份里没有数据', 'alert'); return; }
     const body = `<p style="margin:0 0 16px">备份里有 <b>${incoming.subs.length}</b> 个会员、<b>${incoming.categories.length}</b> 个大类。这台设备现在有 ${state.subs.length} 个会员。</p>
       <div class="form">
