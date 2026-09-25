@@ -19,9 +19,12 @@ const CURRENCIES = {
 };
 const DEFAULT_RATES = { CNY: 1, USD: 7.1, HKD: 0.91, EUR: 8.3, GBP: 9.5, JPY: 0.048 };
 const LEADS = [0, 1, 3, 7];
+const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 
 /* ================= utilities ================= */
 const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const pad = (n) => String(n).padStart(2, '0');
@@ -32,6 +35,7 @@ function toISO(dt) { return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-
 function todayISO() { return toISO(new Date()); }
 function isISO(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
 function daysBetween(a, b) { return Math.round((parseD(b) - parseD(a)) / 86400000); }
+function addDays(iso, n) { const d = parseD(iso); d.setDate(d.getDate() + n); return toISO(d); }
 function addCycle(iso, cycle, times = 1) {
   const d = parseD(iso);
   if (cycle === 'week') { d.setDate(d.getDate() + 7 * times); return toISO(d); }
@@ -52,9 +56,9 @@ function fmtNum(n) { return Number(n || 0).toLocaleString('zh-CN', { maximumFrac
 function money(currency, amount) { return (CURRENCIES[currency] || CURRENCIES.CNY).sym + ' ' + fmtNum(amount); }
 function unitOf(cycle) { return (CYCLES[cycle] || CYCLES.month).unit; }
 
-/* ================= icons (SF Symbols stand-ins, 24px / 1.75 stroke) ================= */
+/* ================= icons ================= */
 const GLYPHS = {
-  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/>',
   list: '<path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.75" cy="6.5" r=".9"/><circle cx="4.75" cy="12" r=".9"/><circle cx="4.75" cy="17.5" r=".9"/>',
   bell: '<path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.75H5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
   calendar: '<rect x="3.75" y="5" width="16.5" height="15" rx="2.5"/><path d="M3.75 9.75h16.5M8 3v4M16 3v4"/>',
@@ -75,10 +79,11 @@ const GLYPHS = {
   play: '<circle cx="12" cy="12" r="8.25"/><path d="M10.25 8.75v6.5L15.5 12z"/>',
   up: '<path d="M7 14l5-5 5 5"/>',
   down: '<path d="M7 10l5 5 5-5"/>',
+  sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
   ticket: '<path d="M3.75 7.5A1.5 1.5 0 0 1 5.25 6h13.5a1.5 1.5 0 0 1 1.5 1.5v2.25a2.25 2.25 0 0 0 0 4.5v2.25a1.5 1.5 0 0 1-1.5 1.5H5.25a1.5 1.5 0 0 1-1.5-1.5v-2.25a2.25 2.25 0 0 0 0-4.5z"/><path d="M15 6.5v1.5M15 11.25v1.5M15 16v1.5"/>'
 };
 function icon(name, size = 18) {
-  return `<svg class="rn-ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[name] || ''}</svg>`;
+  return `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[name] || ''}</svg>`;
 }
 
 /* ================= state ================= */
@@ -111,13 +116,13 @@ function load() {
   try { return normalize(JSON.parse(localStorage.getItem(STORE_KEY))); } catch (e) { return emptyState(); }
 }
 let state = load();
-const ui = { filter: 'all', menuOpen: false };
+const ui = { filter: 'all', shown: { monthly: 0, yearly: 0 } };
 
 function save() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch (e) {
-    toast('保存失败：浏览器存储空间不足，试试删掉几个大图标');
+    toast('保存失败：浏览器存储空间不足，试试删掉几个大图标', 'alert');
     return false;
   }
   if (navigator.storage && navigator.storage.persist && !save.asked) { save.asked = true; navigator.storage.persist().catch(() => {}); }
@@ -136,6 +141,14 @@ function statusOf(s) {
   if (!s.nextDue) return { status: 'active', label: '未设到期日', days: Infinity };
   const days = daysBetween(todayISO(), s.nextDue);
   return { ...describeDue(days, Math.max(state.settings.soonWindow, s.lead)), days };
+}
+// Share of the current billing period already used (0–1), or null when it can't be told.
+function cycleOf(s) {
+  if (s.paused || !s.lastPaid || !s.nextDue) return null;
+  const total = daysBetween(s.lastPaid, s.nextDue);
+  if (total <= 0) return null;
+  const used = daysBetween(s.lastPaid, todayISO());
+  return { total, used: Math.max(0, Math.min(total, used)), share: Math.max(0, Math.min(1, used / total)) };
 }
 function monthlyCNY(s) {
   if (s.paused) return 0;
@@ -156,84 +169,68 @@ function subsIn(catId) {
 }
 function findSub(id) { return state.subs.find((s) => s.id === id); }
 function catName(id) { const c = state.categories.find((x) => x.id === id); return c ? c.name : '未分类'; }
+function toneOf(name) { let h = 7; for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0; return h % 6; }
 
 /* ================= render: pieces ================= */
 function appIcon(s, size) {
-  const initial = (s.name || '?').trim().charAt(0).toUpperCase();
-  return `<span class="rn-appicon" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px" role="img" aria-label="${esc(s.name)} 图标">${s.icon ? `<img src="${s.icon}" alt="">` : esc(initial)}</span>`;
+  const name = s.name || '?';
+  const inner = s.icon ? `<img src="${s.icon}" alt="">` : esc(name.trim().charAt(0).toUpperCase());
+  return `<span class="app-icon${s.icon ? '' : ' tone-' + toneOf(name)}" style="--s:${size}px" role="img" aria-label="${esc(name)} 图标">${inner}</span>`;
 }
 function badge(st) {
   const ic = { soon: 'clock', overdue: 'alert', paused: 'pause' }[st.status];
-  return `<span class="rn-badge rn-badge-${st.status}">${ic ? icon(ic, 14) : ''}${esc(st.label)}</span>`;
+  return `<span class="badge badge-${st.status}">${ic ? icon(ic, 14) : ''}${esc(st.label)}</span>`;
 }
 function planLine(s) { return [s.plan, CYCLES[s.cycle].label].filter(Boolean).join(' · '); }
+function bar(s, st, i = 0) {
+  const c = cycleOf(s);
+  const share = st.status === 'overdue' ? 1 : c ? c.share : 0;
+  return `<div class="bar bar-${st.status}" style="--i:${i}" aria-hidden="true"><i style="width:${(share * 100).toFixed(1)}%"></i></div>`;
+}
 
-function card(s) {
+function card(s, i) {
   const st = statusOf(s);
-  return `<article class="rn-card${s.paused ? ' is-paused' : ''}" data-open="${s.id}" tabindex="0" role="button" aria-label="${esc(s.name)}，${esc(st.label)}">
-    <div class="rn-card-top">${appIcon(s, 48)}<div class="rn-card-id"><p class="rn-name">${esc(s.name)}</p><p class="rn-plan">${esc(planLine(s))}</p></div>${badge(st)}</div>
-    <div class="rn-card-price"><span class="rn-amount">${esc(money(s.currency, s.amount))}</span><span class="rn-unit">/ ${unitOf(s.cycle)}</span></div>
-    <div class="rn-perf" aria-hidden="true"></div>
-    <div class="rn-card-stub">
-      <div><span class="rn-k">上次续费</span><span class="rn-v">${fmtDate(s.lastPaid)}</span></div>
-      <div><span class="rn-k">${s.paused ? '到期后' : '下次到期'}</span><span class="rn-v">${s.paused ? '不再续费' : fmtDate(s.nextDue)}</span></div>
-    </div>
+  return `<article class="card glass stagger${s.paused ? ' is-paused' : ''}" style="--i:${i}" data-open="${s.id}" tabindex="0" role="button" aria-label="${esc(s.name)}，${esc(st.label)}">
+    <div class="card-top">${appIcon(s, 52)}<div class="card-id"><p class="name">${esc(s.name)}</p><p class="plan">${esc(planLine(s))}</p></div>${badge(st)}</div>
+    <div class="price"><span class="amount">${esc(money(s.currency, s.amount))}</span><span class="unit">/ ${unitOf(s.cycle)}</span></div>
+    ${bar(s, st, i)}
+    <div class="dates"><span>上次 <b>${fmtDate(s.lastPaid)}</b></span><span>${s.paused ? '到期后不再续费' : `下次 <b>${fmtDate(s.nextDue)}</b>`}</span></div>
   </article>`;
 }
-function row(s) {
+function row(s, i) {
   const st = statusOf(s);
-  const sub = planLine(s) + (s.lastPaid ? ' · 上次 ' + fmtDate(s.lastPaid) : '');
-  return `<div class="rn-rowitem${s.paused ? ' is-paused' : ''}" data-open="${s.id}" tabindex="0" role="button" aria-label="${esc(s.name)}，${esc(st.label)}">
-    ${appIcon(s, 32)}
-    <div class="rn-row-id"><p class="rn-name">${esc(s.name)}</p><p class="rn-plan">${esc(sub)}</p></div>
-    <div class="rn-row-due">${badge(st)}<span class="rn-row-date">${s.paused ? '到期后不再续费' : s.nextDue ? fmtDate(s.nextDue) + ' 到期' : ''}</span></div>
-    <div class="rn-row-amt"><span><span class="rn-num">${esc(money(s.currency, s.amount))}</span><span class="rn-unit">/ ${unitOf(s.cycle)}</span></span>${badge(st)}</div>
+  const sub = planLine(s) + (s.paused ? ' · 已停订' : s.nextDue ? ' · 下次 ' + fmtDate(s.nextDue) : '');
+  return `<div class="row stagger${s.paused ? ' is-paused' : ''}" style="--i:${i}" data-open="${s.id}" tabindex="0" role="button" aria-label="${esc(s.name)}，${esc(st.label)}">
+    ${appIcon(s, 40)}
+    <div class="row-id"><p class="name">${esc(s.name)}</p><p class="plan">${esc(sub)}</p></div>
+    <div class="row-right"><span class="row-amt"><span class="num">${esc(money(s.currency, s.amount))}</span><span class="unit">/ ${unitOf(s.cycle)}</span></span>${badge(st)}</div>
   </div>`;
 }
-function categoryHeader(name, list) {
+function catHead(name, list, i) {
   const monthly = list.reduce((t, s) => t + monthlyCNY(s), 0);
   const active = list.filter((s) => !s.paused).length;
-  return `<div class="rn-cat"><h2>${esc(name)}</h2><span class="rn-cat-meta">${list.length} 项${active ? ` · 每月约 <span class="rn-num">¥ ${fmtNum(Math.round(monthly))}</span>` : ''}</span></div>`;
+  return `<div class="cat-head" style="--i:${i}"><h2>${esc(name)}</h2><span class="cat-meta">${list.length} 项${active ? ` · 每月约 <span class="num">¥ ${fmtNum(Math.round(monthly))}</span>` : ''}</span></div>`;
 }
 
 /* ================= render: page ================= */
-function render() {
+function render(opts = {}) {
   const app = $('#app');
-  const total = state.subs.reduce((t, s) => t + monthlyCNY(s), 0);
-  const activeCount = state.subs.filter((s) => !s.paused).length;
+  const now = new Date();
   const view = state.settings.view;
   if (ui.filter !== 'all' && !sortedCategories().some((c) => c.id === ui.filter)) ui.filter = 'all';
-
-  const attention = state.subs.map((s) => ({ s, st: statusOf(s) })).filter((x) => x.st.status === 'soon' || x.st.status === 'overdue').sort((a, b) => a.st.days - b.st.days);
-
-  let body = '';
-  if (!state.subs.length) {
-    body = `<div class="empty">
-      <div class="empty-art">${icon('ticket', 48)}</div>
-      <h2>还没有记录任何会员</h2>
-      <p>把 Claude、ChatGPT 这些会员记下来：什么套餐、上次什么时候续的、花了多少，到期前会提醒你。</p>
-      <div class="actions"><button class="rn-btn rn-btn-primary" data-act="add">${icon('plus')}添加会员</button><button class="rn-btn" data-act="demo">载入示例看看</button></div>
-    </div>`;
-  } else {
-    const cats = sortedCategories().filter((c) => ui.filter === 'all' || c.id === ui.filter);
-    body = cats.map((c) => {
-      const list = subsIn(c.id);
-      if (!list.length) return '';
-      return `<section class="group">${categoryHeader(c.name, list)}${view === 'card' ? `<div class="rn-grid">${list.map(card).join('')}</div>` : `<div class="rn-list">${list.map(row).join('')}</div>`}</section>`;
-    }).join('') || '<div class="empty"><p>这个大类下还没有会员。</p></div>';
-  }
-
-  const chips = state.subs.length ? [`<button class="rn-chip" data-filter="all" aria-pressed="${ui.filter === 'all'}">全部 <span class="count">${state.subs.length}</span></button>`]
-    .concat(sortedCategories().map((c) => { const n = subsIn(c.id).length; return n ? `<button class="rn-chip" data-filter="${c.id}" aria-pressed="${ui.filter === c.id}">${esc(c.name)} <span class="count">${n}</span></button>` : ''; })).join('') : '';
+  const statuses = state.subs.map((s) => ({ s, st: statusOf(s) }));
+  const count = (k) => statuses.filter((x) => x.st.status === k).length;
+  const attention = statuses.filter((x) => x.st.status === 'soon' || x.st.status === 'overdue').sort((a, b) => a.st.days - b.st.days);
+  const has = state.subs.length > 0;
 
   app.innerHTML = `
-    <header class="topbar">
-      <h1>续费簿</h1>
-      <div class="topbar-actions">
-        <button class="rn-btn rn-btn-primary" data-act="add" aria-label="添加会员">${icon('plus')}<span class="btn-label">添加会员</span></button>
+    <header class="top">
+      <div class="top-title"><h1>续费簿</h1><p class="date">${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}</p></div>
+      <div class="top-actions">
+        <button class="btn btn-primary" data-act="add" aria-label="添加会员">${icon('plus')}<span class="btn-label">添加会员</span></button>
         <div class="menu-wrap">
-          <button class="rn-btn rn-btn-icon" data-act="menu" aria-label="更多" aria-haspopup="menu" aria-expanded="${ui.menuOpen}">${icon('more')}</button>
-          ${ui.menuOpen ? `<div class="menu" role="menu">
+          <button class="btn icon-btn" data-act="menu" aria-label="更多" aria-haspopup="menu" aria-expanded="false">${icon('more')}</button>
+          <div class="menu" role="menu" hidden>
             <button role="menuitem" data-act="cats">${icon('folder')}管理大类</button>
             <button role="menuitem" data-act="ics-all">${icon('calendar')}全部加到日历</button>
             <hr>
@@ -241,65 +238,153 @@ function render() {
             <button role="menuitem" data-act="import">${icon('download')}导入备份</button>
             <hr>
             <button role="menuitem" data-act="settings">${icon('gear')}设置</button>
-          </div>` : ''}
+          </div>
         </div>
       </div>
     </header>
-    ${state.subs.length ? `<p class="summary">${activeCount} 项在续 · 每月约 <span class="rn-num">¥ ${fmtNum(Math.round(total))}</span> · 每年约 <span class="rn-num">¥ ${fmtNum(Math.round(total * 12))}</span></p>` : ''}
-    ${attention.length ? `<div class="alert" role="status">${icon('bell')}<div class="alert-body"><span class="alert-title">需要留意</span>${attention.map((x) => `<button class="alert-item" data-open="${x.s.id}">${appIcon(x.s, 20)}${esc(x.s.name)} · ${esc(x.st.label)}</button>`).join('')}</div></div>` : ''}
-    ${state.subs.length ? `<div class="toolbar"><div class="filters" role="group" aria-label="按大类筛选">${chips}</div>
-      <div class="rn-seg" role="radiogroup" aria-label="显示方式">
-        <button class="rn-seg-opt" role="radio" data-view="card" aria-checked="${view === 'card'}">${icon('grid', 16)}卡片</button>
-        <button class="rn-seg-opt" role="radio" data-view="list" aria-checked="${view === 'list'}">${icon('list', 16)}清单</button>
+    ${has ? `<section class="hero glass">
+      <div>
+        <span class="hero-label">每月会员支出约</span>
+        <div class="hero-num"><span class="cur">¥</span><span id="hero-monthly">${fmtNum(ui.shown.monthly)}</span></div>
+        <span class="hero-sub">每年约 <span class="num">¥ <span id="hero-yearly">${fmtNum(ui.shown.yearly)}</span></span></span>
+      </div>
+      <div class="hero-stats">
+        <span class="stat"><b>${count('active') + count('soon') + count('overdue')}</b>项在续</span>
+        ${count('soon') ? `<span class="stat stat-soon"><b>${count('soon')}</b>即将到期</span>` : ''}
+        ${count('overdue') ? `<span class="stat stat-overdue"><b>${count('overdue')}</b>已过期</span>` : ''}
+      </div>
+    </section>` : ''}
+    ${attention.length ? `<div class="attention glass" role="status"><span class="attention-title">${icon('bell', 16)}需要留意</span>${attention.map((x) => `<button class="att-item ${x.st.status}" data-open="${x.s.id}">${appIcon(x.s, 28)}${esc(x.s.name)}<span class="tag">${esc(x.st.label)}</span></button>`).join('')}</div>` : ''}
+    ${has ? `<div class="toolbar">
+      <div class="filters" role="group" aria-label="按大类筛选">${chipsHTML()}</div>
+      <div class="seg glass" role="radiogroup" aria-label="显示方式" data-value="${view}">
+        <span class="seg-thumb" aria-hidden="true"></span>
+        <button class="seg-opt" role="radio" data-view="card" aria-checked="${view === 'card'}">${icon('grid', 16)}卡片</button>
+        <button class="seg-opt" role="radio" data-view="list" aria-checked="${view === 'list'}">${icon('list', 16)}清单</button>
       </div></div>` : ''}
-    <main>${body}</main>`;
+    <main id="main"></main>`;
+  renderMain(opts.animate !== false);
+  if (has) {
+    const monthly = state.subs.reduce((t, s) => t + monthlyCNY(s), 0);
+    countUp($('#hero-monthly'), ui.shown.monthly, Math.round(monthly), (v) => { ui.shown.monthly = v; });
+    countUp($('#hero-yearly'), ui.shown.yearly, Math.round(monthly * 12), (v) => { ui.shown.yearly = v; });
+  }
+}
+function chipsHTML() {
+  return [`<button class="chip" data-filter="all" aria-pressed="${ui.filter === 'all'}">全部 <span class="count">${state.subs.length}</span></button>`]
+    .concat(sortedCategories().map((c) => { const n = subsIn(c.id).length; return n ? `<button class="chip" data-filter="${c.id}" aria-pressed="${ui.filter === c.id}">${esc(c.name)} <span class="count">${n}</span></button>` : ''; })).join('');
+}
+function renderMain(animate) {
+  const main = $('#main');
+  main.className = animate && !REDUCED.matches ? 'anim' : '';
+  if (!state.subs.length) {
+    main.innerHTML = `<div class="empty glass">
+      <div class="empty-art">${icon('ticket', 40)}</div>
+      <h2>还没有记录任何会员</h2>
+      <p>把 Claude、ChatGPT 这些会员记下来：什么套餐、上次什么时候续的、花了多少，到期前提醒你。</p>
+      <div class="actions"><button class="btn btn-primary" data-act="add">${icon('plus')}添加会员</button><button class="btn" data-act="demo">${icon('sparkle')}载入示例看看</button></div>
+    </div>`;
+    return;
+  }
+  const view = state.settings.view;
+  let k = 0;
+  const cats = sortedCategories().filter((c) => ui.filter === 'all' || c.id === ui.filter);
+  main.innerHTML = cats.map((c) => {
+    const list = subsIn(c.id);
+    if (!list.length) return '';
+    const head = catHead(c.name, list, k);
+    const items = list.map((s) => (view === 'card' ? card : row)(s, ++k)).join('');
+    k += 1;
+    return `<section class="group">${head}${view === 'card' ? `<div class="grid">${items}</div>` : `<div class="list glass">${items}</div>`}</section>`;
+  }).join('') || '<div class="empty glass"><p style="margin:0">这个大类下还没有会员。</p></div>';
+}
+function countUp(el, from, to, done) {
+  if (!el) return;
+  if (from === to || REDUCED.matches) { el.textContent = fmtNum(to); done(to); return; }
+  const t0 = performance.now(), dur = 900;
+  const step = (t) => {
+    if (!el.isConnected) return;
+    const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 4);
+    const v = Math.round(from + (to - from) * e);
+    el.textContent = fmtNum(v);
+    if (k < 1) requestAnimationFrame(step); else done(to);
+  };
+  requestAnimationFrame(step);
 }
 
-/* ================= dialogs ================= */
+/* ---------- menu ---------- */
+function openMenu() {
+  const m = $('.menu'), b = $('[data-act="menu"]');
+  if (!m) return;
+  m.classList.remove('closing'); m.hidden = false; b.setAttribute('aria-expanded', 'true');
+}
+function closeMenu() {
+  const m = $('.menu'), b = $('[data-act="menu"]');
+  if (!m || m.hidden || m.classList.contains('closing')) return;
+  m.classList.add('closing'); b.setAttribute('aria-expanded', 'false');
+  setTimeout(() => { m.hidden = true; m.classList.remove('closing'); }, 140);
+}
+const menuOpen = () => { const m = $('.menu'); return m && !m.hidden && !m.classList.contains('closing'); };
+
+/* ================= sheets ================= */
 const sheet = () => $('#sheet');
-function openSheet(title, bodyHTML, footHTML, cls = '') {
+let sheetTimer = 0;
+function openSheet(title, bodyHTML, footHTML, opts = {}) {
   const d = sheet();
-  d.className = 'sheet ' + cls;
-  d.innerHTML = `<div class="sheet-head"><h2>${title}</h2><button class="rn-btn rn-btn-plain rn-btn-icon" data-act="close" aria-label="关闭">${icon('close')}</button></div>
-    <div class="sheet-body">${bodyHTML}</div>${footHTML ? `<div class="sheet-foot">${footHTML}</div>` : ''}`;
+  clearTimeout(sheetTimer);
+  d.classList.remove('closing');
+  const keep = opts.still && d.open ? d.querySelector('.sheet-body').scrollTop : 0;
+  d.innerHTML = `<div class="sheet-grabber" aria-hidden="true"></div>
+    <div class="sheet-head"><h2>${title}</h2><button class="btn btn-plain icon-btn" data-act="close" aria-label="关闭">${icon('close')}</button></div>
+    <div class="sheet-body${opts.still ? ' still' : ''}">${bodyHTML}</div>${footHTML ? `<div class="sheet-foot">${footHTML}</div>` : ''}`;
   if (!d.open) d.showModal();
-  d.querySelector('.sheet-body').scrollTop = 0;
+  d.querySelector('.sheet-body').scrollTop = keep;
 }
-function closeSheet() { const d = sheet(); if (d.open) d.close(); }
-
-function field(label, inner, hint = '', attrs = '') {
-  return `<label class="rn-field" ${attrs}><span class="rn-field-label">${label}</span><span class="rn-field-box">${inner}</span>${hint ? `<span class="rn-field-hint">${hint}</span>` : ''}</label>`;
+function closeSheet() {
+  const d = sheet();
+  if (!d.open || d.classList.contains('closing')) return;
+  d.classList.add('closing');
+  sheetTimer = setTimeout(() => { d.classList.remove('closing'); d.close(); }, REDUCED.matches ? 0 : 230);
 }
+function field(label, inner, hint = '') {
+  return `<label class="field"><span class="field-label">${label}</span><span class="field-box">${inner}</span>${hint ? `<span class="field-hint">${hint}</span>` : ''}</label>`;
+}
+function setPressed(selector, match) { $$(selector).forEach((b) => b.setAttribute('aria-pressed', String(match(b)))); }
 
 /* ---------- detail ---------- */
 function openDetail(id) {
   const s = findSub(id);
   if (!s) return;
   const st = statusOf(s);
-  const eq = !s.paused && (s.currency !== 'CNY' || s.cycle !== 'month') ? `<span class="equiv">每月约 ¥ ${fmtNum(Math.round(monthlyCNY(s)))}</span>` : '';
+  const c = cycleOf(s);
   const hist = [...s.history].sort((a, b) => (a.date < b.date ? 1 : -1));
-  const body = `<div class="detail">
-    <div class="detail-top">${appIcon(s, 56)}<div class="rn-card-id"><p class="rn-name">${esc(s.name)}</p><p class="rn-plan">${esc(catName(s.categoryId))} · ${esc(planLine(s))}${s.autoRenew ? ' · 自动续费' : ''}</p></div>${badge(st)}</div>
-    <div class="detail-price"><span class="rn-amount">${esc(money(s.currency, s.amount))}</span><span class="rn-unit">/ ${unitOf(s.cycle)}</span>${eq}</div>
-    <div class="rn-perf" aria-hidden="true"></div>
-    <div class="detail-stub">
-      <div><span class="rn-k">上次续费</span><span class="rn-v">${fmtDate(s.lastPaid)}</span></div>
-      <div><span class="rn-k">${s.paused ? '到期后' : '下次到期'}</span><span class="rn-v">${s.paused ? '不再续费' : fmtDate(s.nextDue)}</span></div>
-      <div><span class="rn-k">提醒</span><span class="rn-v">${s.lead === 0 ? '到期当天' : '提前 ' + s.lead + ' 天'}</span></div>
+  const foreign = !s.paused && (s.currency !== 'CNY' || s.cycle !== 'month');
+  const body = `
+    <div class="detail-hero">${appIcon(s, 64)}<div style="min-width:0"><p class="name">${esc(s.name)}</p><p class="plan">${esc(catName(s.categoryId))} · ${esc(planLine(s))}</p></div></div>
+    <div>
+      <div class="detail-price"><span class="amount">${esc(money(s.currency, s.amount))}</span><span class="unit">/ ${unitOf(s.cycle)}</span>${badge(st)}</div>
+      ${s.paused ? '' : `${bar(s, st)}<div class="cycle-cap"><span>${st.status === 'overdue' ? `已超过到期日 ${-st.days} 天，记得续费或标记停订` : c ? `本期已过 ${c.used} 天` : ''}</span><span>${c && st.status !== 'overdue' ? `共 ${c.total} 天` : ''}</span></div>`}
     </div>
-    ${s.note ? `<p class="detail-note">${esc(s.note)}</p>` : ''}
+    <div class="tiles">
+      <div class="tile"><span class="k">上次续费</span><span class="v">${fmtDate(s.lastPaid)}</span></div>
+      <div class="tile"><span class="k">${s.paused ? '到期后' : '下次到期'}</span><span class="v">${s.paused ? '不再续费' : fmtDate(s.nextDue)}</span></div>
+      <div class="tile"><span class="k">提醒</span><span class="v">${s.lead === 0 ? '到期当天' : '提前 ' + s.lead + ' 天'}</span></div>
+      <div class="tile"><span class="k">${foreign ? '折合每月' : '扣费方式'}</span><span class="v">${foreign ? '¥ ' + fmtNum(Math.round(monthlyCNY(s))) : s.autoRenew ? '自动续费' : '手动续费'}</span></div>
+    </div>
+    ${s.note ? `<p class="note">${esc(s.note)}</p>` : ''}
     <div class="detail-actions">
-      ${s.paused ? '' : `<button class="rn-btn rn-btn-primary" data-act="renew" data-id="${s.id}">${icon('renew')}记一笔续费</button>`}
-      ${s.paused || !s.nextDue ? '' : `<button class="rn-btn" data-act="ics" data-id="${s.id}">${icon('calendar')}加到日历</button>`}
-      <button class="rn-btn" data-act="edit" data-id="${s.id}">${icon('edit')}编辑</button>
+      ${s.paused ? '' : `<button class="btn btn-primary" data-act="renew" data-id="${s.id}">${icon('renew')}记一笔续费</button>`}
+      ${s.paused || !s.nextDue ? '' : `<button class="btn" data-act="ics" data-id="${s.id}">${icon('calendar')}加到日历</button>`}
+      <button class="btn" data-act="edit" data-id="${s.id}">${icon('edit')}编辑</button>
     </div>
-    <p class="section-title">续费记录</p>
-    ${hist.length ? `<ul class="history">${hist.map((h) => `<li><span class="date">${fmtDateFull(h.date)}</span><span class="plan">${esc(h.plan)}</span><span class="rn-num">${esc(money(h.currency, h.amount))}</span><button class="rm" data-act="rm-hist" data-id="${s.id}" data-hid="${h.id}" aria-label="删除这条记录">${icon('close', 16)}</button></li>`).join('')}</ul>` : '<p class="muted" style="margin:0 0 24px;font-size:14px">还没有续费记录。</p>'}
+    <div>
+      <p class="section-title">续费记录</p>
+      ${hist.length ? `<ul class="history">${hist.map((h) => `<li><span class="dot"></span><span><span class="date">${fmtDateFull(h.date)}</span> <span class="muted">${esc(h.plan)}</span></span><span class="num">${esc(money(h.currency, h.amount))}</span><button class="rm" data-act="rm-hist" data-id="${s.id}" data-hid="${h.id}" aria-label="删除这条记录">${icon('close', 16)}</button></li>`).join('')}</ul>` : '<p class="muted" style="margin:0 0 24px 4px;font-size:14px">还没有续费记录。</p>'}
+    </div>
     <div class="danger-zone">
-      <button class="rn-btn rn-btn-sm" data-act="toggle-pause" data-id="${s.id}">${icon(s.paused ? 'play' : 'pause', 16)}${s.paused ? '恢复续费' : '标记停订'}</button>
-      <button class="rn-btn rn-btn-sm rn-btn-danger" data-act="delete" data-id="${s.id}">${icon('trash', 16)}删除</button>
-    </div>
-  </div>`;
+      <button class="btn btn-sm" data-act="toggle-pause" data-id="${s.id}">${icon(s.paused ? 'play' : 'pause', 16)}${s.paused ? '恢复续费' : '标记停订'}</button>
+      <button class="btn btn-sm btn-danger" data-act="delete" data-id="${s.id}">${icon('trash', 16)}删除</button>
+    </div>`;
   openSheet('会员详情', body, '');
 }
 
@@ -315,7 +400,16 @@ function openEdit(id) {
   draft.nextManual = s ? s.nextDue !== (s.lastPaid ? addCycle(s.lastPaid, s.cycle) : '') : false;
   renderEdit(!!s);
 }
-function renderEdit(isEdit) {
+function nextHint() {
+  const auto = draft.lastPaid ? addCycle(draft.lastPaid, draft.cycle) : '';
+  return draft.nextManual && auto ? `已手动修改 · <button type="button" data-act="auto-next">按周期算：${fmtDate(auto)}</button>` : '按上次续费日期和周期自动计算';
+}
+function iconPickHTML() {
+  return `${appIcon({ name: draft.name || '?', icon: draft.icon }, 60)}
+    <button type="button" class="btn btn-sm" data-act="pick-icon">${icon('upload', 16)}${draft.icon ? '更换图标' : '上传图标'}</button>
+    ${draft.icon ? '<button type="button" class="btn btn-sm btn-plain" data-act="clear-icon">移除</button>' : ''}`;
+}
+function renderEdit(isEdit, still = false) {
   const d = draft;
   const cats = [...state.categories].sort((a, b) => a.order - b.order);
   if (!cats.length && !d.categoryId) d.categoryId = '__new';
@@ -323,37 +417,31 @@ function renderEdit(isEdit) {
   const known = cats.some((c) => c.id === d.categoryId);
   const catOpts = cats.map((c) => `<option value="${c.id}"${c.id === d.categoryId ? ' selected' : ''}>${esc(c.name)}</option>`).join('') +
     `<option value=""${!known && !isNewCat ? ' selected' : ''}>未分类</option><option value="__new"${isNewCat ? ' selected' : ''}>+ 新建大类…</option>`;
-  const auto = d.lastPaid ? addCycle(d.lastPaid, d.cycle) : '';
   const body = `<form class="form" id="edit-form" novalidate>
-    ${field('大类', `<select name="categoryId">${catOpts}</select>${icon('down', 16)}`)}
-    <label class="rn-field" id="new-cat" ${isNewCat ? '' : 'hidden'}><span class="rn-field-label">新大类名称</span><span class="rn-field-box"><input name="newCat" placeholder="例如 AI 工具、影音娱乐" maxlength="20" value="${esc(d.newCat || '')}"></span></label>
+    <div class="field"><span class="field-label">图标</span><div class="icon-pick" id="icon-pick">${iconPickHTML()}</div>
+      <span class="field-hint">从相册或文件选一张图，会自动裁成正方形。可以在 App Store 截图后裁出图标。</span></div>
     ${field('软件名称', `<input name="name" required maxlength="40" placeholder="例如 Claude" value="${esc(d.name)}" autocomplete="off">`)}
-    <div class="rn-field"><span class="rn-field-label">图标</span>
-      <div class="icon-pick"><span id="icon-preview">${appIcon({ name: d.name || '?', icon: d.icon }, 56)}</span>
-        <button type="button" class="rn-btn rn-btn-sm" data-act="pick-icon">${icon('upload', 16)}${d.icon ? '更换图标' : '上传图标'}</button>
-        ${d.icon ? `<button type="button" class="rn-btn rn-btn-sm rn-btn-plain" data-act="clear-icon">移除</button>` : ''}
-      </div>
-      <span class="rn-field-hint">从相册或文件选一张图，会自动裁成正方形。可以在 App Store 页面截图后裁出图标。</span>
-    </div>
+    ${field('大类', `<select name="categoryId">${catOpts}</select>${icon('down', 16)}`)}
+    <label class="field" id="new-cat" ${isNewCat ? '' : 'hidden'}><span class="field-label">新大类名称</span><span class="field-box"><input name="newCat" placeholder="例如 AI 工具、影音娱乐" maxlength="20" value="${esc(d.newCat || '')}"></span></label>
     ${field('套餐', `<input name="plan" maxlength="40" placeholder="例如 Plus、Max 5x、黑胶 VIP" value="${esc(d.plan)}" autocomplete="off">`)}
-    <div class="rn-field"><span class="rn-field-label">付费周期</span><div class="choice-row">${Object.entries(CYCLES).map(([k, v]) => `<button type="button" class="rn-chip" data-cycle="${k}" aria-pressed="${d.cycle === k}">${v.label}</button>`).join('')}</div></div>
+    <div class="field"><span class="field-label">付费周期</span><div class="choice-row">${Object.entries(CYCLES).map(([k, v]) => `<button type="button" class="chip" data-cycle="${k}" aria-pressed="${d.cycle === k}">${v.label}</button>`).join('')}</div></div>
     <div class="form-row">
       ${field('币种', `<select name="currency">${Object.entries(CURRENCIES).map(([k, v]) => `<option value="${k}"${d.currency === k ? ' selected' : ''}>${v.sym} ${v.name}</option>`).join('')}</select>${icon('down', 16)}`)}
-      ${field('金额', `<span class="rn-field-affix" id="cur-sym">${esc(CURRENCIES[d.currency].sym)}</span><input name="amount" inputmode="decimal" placeholder="0" value="${esc(d.amount)}" autocomplete="off"><span class="rn-field-affix" id="cyc-unit">/ ${unitOf(d.cycle)}</span>`)}
+      ${field('金额', `<span class="affix" id="cur-sym">${esc(CURRENCIES[d.currency].sym)}</span><input name="amount" inputmode="decimal" placeholder="0" value="${esc(d.amount)}" autocomplete="off"><span class="affix" id="cyc-unit">/ ${unitOf(d.cycle)}</span>`)}
     </div>
     <div class="form-row">
       ${field('上次续费日期', `<input type="date" name="lastPaid" value="${esc(d.lastPaid)}">`)}
-      ${field('下次到期', `<input type="date" name="nextDue" value="${esc(d.nextDue)}">`, `<span id="next-hint">${d.nextManual && auto ? `已手动修改 · <button type="button" data-act="auto-next">按周期算：${fmtDate(auto)}</button>` : '按上次续费日期和周期自动计算'}</span>`)}
+      ${field('下次到期', `<input type="date" name="nextDue" value="${esc(d.nextDue)}">`, `<span id="next-hint">${nextHint()}</span>`)}
     </div>
-    <div class="rn-field"><span class="rn-field-label">到期提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="rn-chip" data-lead="${n}" aria-pressed="${d.lead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div>
-      <span class="rn-field-hint">保存后点「加到日历」，iPhone 和 Mac 的日历会在这个时间提醒你。</span></div>
-    <label class="switch-row"><span>自动续费（到期会自动扣款）</span><input type="checkbox" class="switch" name="autoRenew" ${d.autoRenew ? 'checked' : ''}></label>
+    <div class="field"><span class="field-label">到期提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-lead="${n}" aria-pressed="${d.lead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div>
+      <span class="field-hint">保存后点「加到日历」，iPhone 和 Mac 的日历会在这个时间提醒你。</span></div>
+    <label class="switch-row"><span>自动续费（到期自动扣款）</span><input type="checkbox" class="switch" name="autoRenew" ${d.autoRenew ? 'checked' : ''}></label>
     ${field('备注', `<textarea name="note" rows="2" maxlength="500" placeholder="例如 绑定招行信用卡、用的是美区 Apple ID">${esc(d.note)}</textarea>`)}
   </form>`;
-  const foot = `${isEdit ? `<button class="rn-btn rn-btn-danger spacer" data-act="delete" data-id="${d.id}">删除</button>` : '<span class="spacer"></span>'}
-    <button class="rn-btn" data-act="${isEdit ? 'back-detail' : 'close'}" data-id="${d.id}">取消</button>
-    <button class="rn-btn rn-btn-primary" data-act="save-edit">保存</button>`;
-  openSheet(isEdit ? '编辑会员' : '添加会员', body, foot);
+  const foot = `${isEdit ? `<button class="btn btn-danger spacer" data-act="delete" data-id="${d.id}">删除</button>` : '<span class="spacer"></span>'}
+    <button class="btn" data-act="${isEdit ? 'back-detail' : 'close'}" data-id="${d.id}">取消</button>
+    <button class="btn btn-primary" data-act="save-edit">${icon('check')}保存</button>`;
+  openSheet(isEdit ? '编辑会员' : '添加会员', body, foot, { still });
 }
 function readDraftFromForm() {
   const f = $('#edit-form');
@@ -371,19 +459,22 @@ function readDraftFromForm() {
   draft.note = (fd.get('note') || '').trim();
 }
 function updateNextAuto() {
-  if (draft.nextManual || !draft.lastPaid) return;
-  draft.nextDue = addCycle(draft.lastPaid, draft.cycle);
-  const inp = $('#edit-form [name="nextDue"]');
-  if (inp) inp.value = draft.nextDue;
+  if (!draft.nextManual && draft.lastPaid) {
+    draft.nextDue = addCycle(draft.lastPaid, draft.cycle);
+    const inp = $('#edit-form [name="nextDue"]');
+    if (inp) inp.value = draft.nextDue;
+  }
+  const h = $('#next-hint');
+  if (h) h.innerHTML = nextHint();
 }
 function saveEdit() {
   readDraftFromForm();
   const amount = parseFloat(String(draft.amount).replace(/,/g, ''));
-  if (!draft.name) { toast('请填写软件名称'); $('#edit-form [name="name"]').focus(); return; }
-  if (!Number.isFinite(amount) || amount < 0) { toast('请填写正确的金额'); $('#edit-form [name="amount"]').focus(); return; }
+  if (!draft.name) { toast('请填写软件名称', 'alert'); $('#edit-form [name="name"]').focus(); return; }
+  if (!Number.isFinite(amount) || amount < 0) { toast('请填写正确的金额', 'alert'); $('#edit-form [name="amount"]').focus(); return; }
   let categoryId = draft.categoryId;
   if (categoryId === '__new') {
-    if (!draft.newCat) { toast('请填写新大类的名称'); $('#edit-form [name="newCat"]').focus(); return; }
+    if (!draft.newCat) { toast('请填写新大类的名称', 'alert'); $('#edit-form [name="newCat"]').focus(); return; }
     const exist = state.categories.find((c) => c.name === draft.newCat);
     if (exist) categoryId = exist.id;
     else {
@@ -411,10 +502,9 @@ function pickIcon() {
     const file = inp.files && inp.files[0];
     if (!file) return;
     try {
-      readDraftFromForm();
       draft.icon = await fileToIcon(file);
-      renderEdit(!!draft.id);
-    } catch (e) { toast('这张图片读不出来，换一张试试'); }
+      $('#icon-pick').innerHTML = iconPickHTML();
+    } catch (e) { toast('这张图片读不出来，换一张试试', 'alert'); }
   };
   inp.click();
 }
@@ -442,18 +532,17 @@ function fileToIcon(file) {
 function openRenew(id) {
   const s = findSub(id);
   if (!s) return;
-  const date = todayISO();
   const body = `<form class="form" id="renew-form" data-id="${s.id}" novalidate>
-    <div class="detail-top" style="grid-template-columns:auto 1fr">${appIcon(s, 40)}<div class="rn-card-id"><p class="rn-name">${esc(s.name)}</p><p class="rn-plan">当前 ${esc(planLine(s))} · ${esc(money(s.currency, s.amount))}</p></div></div>
-    ${field('续费日期', `<input type="date" name="date" value="${date}">`)}
+    <div class="detail-hero">${appIcon(s, 48)}<div style="min-width:0"><p class="name">${esc(s.name)}</p><p class="plan">当前 ${esc(planLine(s))} · ${esc(money(s.currency, s.amount))}</p></div></div>
+    ${field('续费日期', `<input type="date" name="date" value="${todayISO()}">`)}
     ${field('套餐', `<input name="plan" maxlength="40" value="${esc(s.plan)}" autocomplete="off">`, '换了套餐就在这里改，会同步更新到卡片上')}
     <div class="form-row">
       ${field('币种', `<select name="currency">${Object.entries(CURRENCIES).map(([k, v]) => `<option value="${k}"${s.currency === k ? ' selected' : ''}>${v.sym} ${v.name}</option>`).join('')}</select>${icon('down', 16)}`)}
       ${field('金额', `<input name="amount" inputmode="decimal" value="${esc(s.amount)}" autocomplete="off">`)}
     </div>
-    <p class="rn-field-hint" id="renew-next" style="margin:0"></p>
+    <p class="field-hint" id="renew-next" style="margin:0 0 0 4px"></p>
   </form>`;
-  const foot = `<span class="spacer"></span><button class="rn-btn" data-act="back-detail" data-id="${s.id}">取消</button><button class="rn-btn rn-btn-primary" data-act="save-renew" data-id="${s.id}">记下这笔</button>`;
+  const foot = `<span class="spacer"></span><button class="btn" data-act="back-detail" data-id="${s.id}">取消</button><button class="btn btn-primary" data-act="save-renew" data-id="${s.id}">${icon('check')}记下这笔</button>`;
   openSheet('记一笔续费', body, foot);
   updateRenewHint();
 }
@@ -475,8 +564,8 @@ function saveRenew(id) {
   const s = findSub(id);
   const date = f.date.value;
   const amount = parseFloat(String(f.amount.value).replace(/,/g, ''));
-  if (!isISO(date)) { toast('请选择续费日期'); return; }
-  if (!Number.isFinite(amount) || amount < 0) { toast('请填写正确的金额'); return; }
+  if (!isISO(date)) { toast('请选择续费日期', 'alert'); return; }
+  if (!Number.isFinite(amount) || amount < 0) { toast('请填写正确的金额', 'alert'); return; }
   const plan = f.plan.value.trim();
   const currency = f.currency.value;
   s.history.push({ id: uid(), date, amount, currency, plan });
@@ -495,23 +584,23 @@ function saveRenew(id) {
 }
 
 /* ---------- categories ---------- */
-function openCats() {
+function openCats(still = false) {
   const cats = [...state.categories].sort((a, b) => a.order - b.order);
   const body = `<div class="cat-list">${cats.map((c, i) => {
     const n = state.subs.filter((s) => s.categoryId === c.id).length;
     return `<div class="cat-item">
-      <span class="rn-field-box"><input data-cat-name="${c.id}" value="${esc(c.name)}" maxlength="20" aria-label="大类名称"></span>
+      <span class="field-box"><input data-cat-name="${c.id}" value="${esc(c.name)}" maxlength="20" aria-label="大类名称"></span>
       <span class="count">${n} 项</span>
-      <span style="display:flex"><button class="rn-btn rn-btn-plain rn-btn-icon" data-act="cat-up" data-id="${c.id}" aria-label="上移" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="rn-btn rn-btn-plain rn-btn-icon" data-act="cat-down" data-id="${c.id}" aria-label="下移" ${i === cats.length - 1 ? 'disabled' : ''}>${icon('down')}</button></span>
-      <button class="rn-btn rn-btn-plain rn-btn-icon rn-btn-danger" data-act="cat-del" data-id="${c.id}" aria-label="删除大类">${icon('trash')}</button>
+      <span style="display:flex"><button class="btn btn-plain icon-btn" data-act="cat-up" data-id="${c.id}" aria-label="上移" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="btn btn-plain icon-btn" data-act="cat-down" data-id="${c.id}" aria-label="下移" ${i === cats.length - 1 ? 'disabled' : ''}>${icon('down')}</button></span>
+      <button class="btn btn-plain icon-btn btn-danger" data-act="cat-del" data-id="${c.id}" aria-label="删除大类">${icon('trash')}</button>
     </div>`;
   }).join('') || '<p class="muted" style="margin:0">还没有大类。</p>'}</div>
   <form id="cat-add" class="form-row" style="grid-template-columns:1fr auto;align-items:end">
     ${field('新建大类', '<input name="name" placeholder="例如 AI 工具、云存储、学习" maxlength="20">')}
-    <button class="rn-btn" type="submit">${icon('plus')}添加</button>
+    <button class="btn" type="submit" style="height:46px">${icon('plus')}添加</button>
   </form>
-  <p class="rn-field-hint" style="margin-top:12px">改名后点输入框外面就会保存。删除大类时，里面的会员会移到「未分类」。</p>`;
-  openSheet('管理大类', body, '');
+  <p class="field-hint" style="margin:12px 0 0 4px">改名后点输入框外面就会保存。删除大类时，里面的会员会移到「未分类」。</p>`;
+  openSheet('管理大类', body, '', { still });
 }
 function moveCat(id, dir) {
   const cats = [...state.categories].sort((a, b) => a.order - b.order);
@@ -519,23 +608,21 @@ function moveCat(id, dir) {
   if (j < 0 || j >= cats.length) return;
   [cats[i], cats[j]] = [cats[j], cats[i]];
   cats.forEach((c, k) => { c.order = k; c.updatedAt = nowStamp(); });
-  save(); render(); openCats();
+  save(); render({ animate: false }); openCats(true);
 }
 
 /* ---------- settings ---------- */
 function openSettings() {
   const st = state.settings;
-  const body = `<div class="form">
-    <div class="rn-field"><span class="rn-field-label">汇率（1 单位外币 = 多少人民币），用于估算每月花费</span>
-      <div class="rates">${Object.entries(CURRENCIES).filter(([k]) => k !== 'CNY').map(([k, v]) => field(`${v.name} ${v.sym}`, `<input data-rate="${k}" inputmode="decimal" value="${esc(st.rates[k])}">`, '')).join('')}</div>
+  const body = `<div class="field"><span class="field-label">汇率（1 单位外币 = 多少人民币），用于估算每月花费</span>
+      <div class="rates">${Object.entries(CURRENCIES).filter(([k]) => k !== 'CNY').map(([k, v]) => field(`${v.name} ${v.sym}`, `<input data-rate="${k}" inputmode="decimal" value="${esc(st.rates[k])}">`)).join('')}</div>
     </div>
-    <div class="rn-field"><span class="rn-field-label">提前几天算「即将到期」</span><div class="choice-row">${[3, 7, 14].map((n) => `<button type="button" class="rn-chip" data-soon="${n}" aria-pressed="${st.soonWindow === n}">${n} 天</button>`).join('')}</div></div>
-    <div class="rn-field"><span class="rn-field-label">新会员默认提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="rn-chip" data-deflead="${n}" aria-pressed="${st.defaultLead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div></div>
-    <div class="rn-field"><span class="rn-field-label">数据</span>
-      <span class="rn-field-hint">数据只保存在这台设备的浏览器里。换设备或清理浏览器数据前，记得先「导出备份」。</span>
-      <div class="choice-row" style="margin-top:4px"><button class="rn-btn rn-btn-sm" data-act="export">${icon('upload', 16)}导出备份</button><button class="rn-btn rn-btn-sm" data-act="import">${icon('download', 16)}导入备份</button><button class="rn-btn rn-btn-sm rn-btn-danger" data-act="wipe">${icon('trash', 16)}清空全部数据</button></div>
-    </div>
-  </div>`;
+    <div class="field" style="margin-top:18px"><span class="field-label">提前几天算「即将到期」</span><div class="choice-row">${[3, 7, 14].map((n) => `<button type="button" class="chip" data-soon="${n}" aria-pressed="${st.soonWindow === n}">${n} 天</button>`).join('')}</div></div>
+    <div class="field" style="margin-top:18px"><span class="field-label">新会员默认提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-deflead="${n}" aria-pressed="${st.defaultLead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div></div>
+    <div class="field" style="margin-top:18px"><span class="field-label">数据</span>
+      <span class="field-hint">数据只保存在这台设备里。换设备或清理浏览器数据前，记得先「导出备份」。</span>
+      <div class="choice-row" style="margin-top:6px"><button class="btn btn-sm" data-act="export">${icon('upload', 16)}导出备份</button><button class="btn btn-sm" data-act="import">${icon('download', 16)}导入备份</button><button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 16)}清空全部数据</button></div>
+    </div>`;
   openSheet('设置', body, '');
 }
 
@@ -580,7 +667,6 @@ function veventFor(s) {
     'END:VEVENT'
   ];
 }
-function addDays(iso, n) { const d = parseD(iso); d.setDate(d.getDate() + n); return toISO(d); }
 function buildICS(list) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//XuFeiBu//Renewals//ZH', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:续费簿']
     .concat(...list.map(veventFor), ['END:VCALENDAR']);
@@ -593,13 +679,13 @@ function deliverICS(list, filename) {
     // iOS opens a tapped text/calendar link in its "Add to Calendar" sheet; a real tap is the most reliable trigger.
     const href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
     openSheet('加到日历', `<p style="margin:0 0 16px">点下面的按钮，iPhone 会打开「添加到日历」，再点「全部添加」即可。${list.length > 1 ? `一共 ${list.length} 项，` : ''}提醒会按续费周期自动重复。</p>
-      <div class="form"><a class="rn-btn rn-btn-primary" href="${href}" target="_blank" rel="noopener">${icon('calendar')}打开日历邀请</a>
-      <a class="rn-btn" href="${href}" download="${esc(filename)}">${icon('download')}存成文件</a></div>
-      <p class="rn-field-hint" style="margin-top:12px">加到 iPhone 的日历后，只要 iCloud 日历是打开的，Mac 上也会同步提醒。</p>`, '');
+      <div class="form"><a class="btn btn-primary" href="${href}" target="_blank" rel="noopener">${icon('calendar')}打开日历邀请</a>
+      <a class="btn" href="${href}" download="${esc(filename)}">${icon('download')}存成文件</a></div>
+      <p class="field-hint" style="margin-top:12px">加到 iPhone 的日历后，只要 iCloud 日历是打开的，Mac 上也会同步提醒。</p>`, '');
     return;
   }
   downloadBlob(new Blob([ics], { type: 'text/calendar;charset=utf-8' }), filename);
-  toast('已下载日历文件，双击它就能加到「日历」');
+  toast('已下载日历文件，双击它就能加到「日历」', 'calendar');
 }
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -628,12 +714,12 @@ function importBackup() {
     const file = inp.files && inp.files[0];
     if (!file) return;
     let incoming;
-    try { incoming = normalize(JSON.parse(await file.text())); } catch (e) { toast('这个文件不是续费簿的备份'); return; }
-    if (!incoming.subs.length && !incoming.categories.length) { toast('备份里没有数据'); return; }
+    try { incoming = normalize(JSON.parse(await file.text())); } catch (e) { toast('这个文件不是续费簿的备份', 'alert'); return; }
+    if (!incoming.subs.length && !incoming.categories.length) { toast('备份里没有数据', 'alert'); return; }
     const body = `<p style="margin:0 0 16px">备份里有 <b>${incoming.subs.length}</b> 个会员、<b>${incoming.categories.length}</b> 个大类。这台设备现在有 ${state.subs.length} 个会员。</p>
       <div class="form">
-        <button class="rn-btn rn-btn-primary" data-act="import-merge">合并：两边都保留，同一个会员以较新的修改为准</button>
-        <button class="rn-btn rn-btn-danger" data-act="import-replace">替换：用备份覆盖这台设备上的全部数据</button>
+        <button class="btn btn-primary" data-act="import-merge">合并：两边都保留，同一个会员以较新的修改为准</button>
+        <button class="btn btn-danger" data-act="import-replace">替换：用备份覆盖这台设备上的全部数据</button>
       </div>`;
     importBackup.pending = incoming;
     openSheet('导入备份', body, '');
@@ -679,64 +765,88 @@ function loadDemo() {
     mk({ categoryId: cloud.id, name: 'iCloud+', plan: '200GB', cycle: 'month', currency: 'CNY', amount: 21, ...back('month', 12) })
   );
   save(); render();
-  toast('已载入示例，可以随时删掉');
+  toast('已载入示例，可以随时删掉', 'sparkle');
+}
+
+/* ================= toast ================= */
+function toast(msg, ic = 'check') {
+  const el = $('#toast');
+  clearTimeout(toast.t); clearTimeout(toast.t2);
+  el.classList.remove('leaving');
+  el.hidden = true; void el.offsetWidth;
+  el.innerHTML = icon(ic, 18) + '<span></span>';
+  el.lastChild.textContent = msg;
+  el.hidden = false;
+  toast.t = setTimeout(() => { el.classList.add('leaving'); toast.t2 = setTimeout(() => { el.hidden = true; el.classList.remove('leaving'); }, 250); }, 2600);
 }
 
 /* ================= events ================= */
-function toast(msg) {
-  const el = $('#toast');
-  el.textContent = msg;
-  el.hidden = false;
-  clearTimeout(toast.t);
-  toast.t = setTimeout(() => { el.hidden = true; }, 2600);
-}
-
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-act],[data-open],[data-filter],[data-view],[data-cycle],[data-lead],[data-soon],[data-deflead]');
-  if (ui.menuOpen && !(t && t.dataset.act === 'menu')) { ui.menuOpen = false; render(); }
+  if (menuOpen() && !(t && t.dataset.act === 'menu')) closeMenu();
   if (!t) return;
   const d = t.dataset;
 
   if (d.open) { openDetail(d.open); return; }
-  if (d.filter) { ui.filter = d.filter; render(); return; }
-  if (d.view) { state.settings.view = d.view; save(); render(); return; }
-  if (d.cycle) { readDraftFromForm(); draft.cycle = d.cycle; updateNextAuto(); renderEdit(!!draft.id); return; }
-  if (d.lead) { readDraftFromForm(); draft.lead = Number(d.lead); renderEdit(!!draft.id); return; }
-  if (d.soon) { state.settings.soonWindow = Number(d.soon); save(); render(); openSettings(); return; }
-  if (d.deflead) { state.settings.defaultLead = Number(d.deflead); save(); openSettings(); return; }
+  if (d.filter) {
+    if (ui.filter === d.filter) return;
+    ui.filter = d.filter;
+    setPressed('[data-filter]', (b) => b.dataset.filter === ui.filter);
+    renderMain(true);
+    return;
+  }
+  if (d.view) {
+    if (state.settings.view === d.view) return;
+    state.settings.view = d.view; save();
+    const seg = t.closest('.seg');
+    seg.dataset.value = d.view;
+    $$('.seg-opt', seg).forEach((b) => b.setAttribute('aria-checked', String(b.dataset.view === d.view)));
+    renderMain(true);
+    return;
+  }
+  if (d.cycle) {
+    readDraftFromForm(); draft.cycle = d.cycle;
+    setPressed('[data-cycle]', (b) => b.dataset.cycle === d.cycle);
+    $('#cyc-unit').textContent = '/ ' + unitOf(d.cycle);
+    updateNextAuto();
+    return;
+  }
+  if (d.lead) { draft.lead = Number(d.lead); setPressed('[data-lead]', (b) => b.dataset.lead === d.lead); return; }
+  if (d.soon) { state.settings.soonWindow = Number(d.soon); save(); setPressed('[data-soon]', (b) => b.dataset.soon === d.soon); render({ animate: false }); return; }
+  if (d.deflead) { state.settings.defaultLead = Number(d.deflead); save(); setPressed('[data-deflead]', (b) => b.dataset.deflead === d.deflead); return; }
 
   e.preventDefault();
   const s = d.id ? findSub(d.id) : null;
   switch (d.act) {
-    case 'menu': ui.menuOpen = !ui.menuOpen; render(); break;
+    case 'menu': menuOpen() ? closeMenu() : openMenu(); break;
     case 'close': closeSheet(); break;
-    case 'add': ui.menuOpen = false; openEdit(null); break;
+    case 'add': openEdit(null); break;
     case 'demo': loadDemo(); break;
     case 'edit': openEdit(d.id); break;
     case 'back-detail': d.id ? openDetail(d.id) : closeSheet(); break;
     case 'save-edit': saveEdit(); break;
-    case 'pick-icon': pickIcon(); break;
-    case 'clear-icon': readDraftFromForm(); draft.icon = ''; renderEdit(!!draft.id); break;
-    case 'auto-next': readDraftFromForm(); draft.nextManual = false; updateNextAuto(); renderEdit(!!draft.id); break;
+    case 'pick-icon': readDraftFromForm(); pickIcon(); break;
+    case 'clear-icon': draft.icon = ''; $('#icon-pick').innerHTML = iconPickHTML(); break;
+    case 'auto-next': readDraftFromForm(); draft.nextManual = false; updateNextAuto(); break;
     case 'renew': openRenew(d.id); break;
     case 'save-renew': saveRenew(d.id); break;
     case 'rm-hist':
       if (s && confirm('删除这条续费记录？')) { s.history = s.history.filter((h) => h.id !== d.hid); s.updatedAt = nowStamp(); save(); openDetail(s.id); }
       break;
     case 'toggle-pause':
-      if (s) { s.paused = !s.paused; s.updatedAt = nowStamp(); save(); render(); openDetail(s.id); toast(s.paused ? '已标记停订。如果之前加过日历提醒，记得在「日历」里删掉' : '已恢复续费'); }
+      if (s) { s.paused = !s.paused; s.updatedAt = nowStamp(); save(); render({ animate: false }); openDetail(s.id); toast(s.paused ? '已标记停订。之前加过日历提醒的话，记得去「日历」里删掉' : '已恢复续费', s.paused ? 'pause' : 'play'); }
       break;
     case 'delete':
       if (s && confirm(`删除「${s.name}」和它的全部续费记录？`)) {
         state.subs = state.subs.filter((x) => x.id !== s.id);
         state.deleted.push({ id: s.id, at: nowStamp() });
-        save(); render(); closeSheet(); toast('已删除 ' + s.name);
+        save(); render(); closeSheet(); toast('已删除 ' + s.name, 'trash');
       }
       break;
     case 'ics': if (s) deliverICS([s], `续费提醒-${s.name}.ics`); break;
     case 'ics-all': {
       const list = state.subs.filter((x) => !x.paused && x.nextDue);
-      if (!list.length) { toast('没有需要提醒的会员'); break; }
+      if (!list.length) { toast('没有需要提醒的会员', 'alert'); break; }
       deliverICS(list, '续费提醒-全部.ics');
       break;
     }
@@ -749,7 +859,7 @@ document.addEventListener('click', async (e) => {
       if (c && confirm(n ? `删除大类「${c.name}」？里面的 ${n} 个会员会移到「未分类」。` : `删除大类「${c.name}」？`)) {
         state.categories = state.categories.filter((x) => x.id !== c.id);
         state.deleted.push({ id: c.id, at: nowStamp() });
-        save(); render(); openCats();
+        save(); render({ animate: false }); openCats(true);
       }
       break;
     }
@@ -762,7 +872,7 @@ document.addEventListener('click', async (e) => {
       break;
     case 'wipe':
       if (confirm('清空这台设备上的全部会员和大类？此操作不能撤销，建议先导出备份。') && confirm('再确认一次：真的清空吗？')) {
-        const settings = state.settings; state = emptyState(); state.settings = settings; save(); render(); closeSheet(); toast('已清空');
+        const settings = state.settings; state = emptyState(); state.settings = settings; ui.shown = { monthly: 0, yearly: 0 }; save(); render(); closeSheet(); toast('已清空', 'trash');
       }
       break;
   }
@@ -770,7 +880,7 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('keydown', (e) => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-open][role="button"]')) { e.preventDefault(); openDetail(e.target.dataset.open); }
-  if (e.key === 'Escape' && ui.menuOpen) { ui.menuOpen = false; render(); }
+  if (e.key === 'Escape' && menuOpen()) closeMenu();
 });
 
 document.addEventListener('change', (e) => {
@@ -783,27 +893,29 @@ document.addEventListener('change', (e) => {
       readDraftFromForm();
       const auto = draft.lastPaid ? addCycle(draft.lastPaid, draft.cycle) : '';
       draft.nextManual = !!draft.nextDue && draft.nextDue !== auto;
-      $('#next-hint').innerHTML = draft.nextManual && auto ? `已手动修改 · <button type="button" data-act="auto-next">按周期算：${fmtDate(auto)}</button>` : '按上次续费日期和周期自动计算';
+      $('#next-hint').innerHTML = nextHint();
     }
   }
   if (t.closest('#renew-form')) updateRenewHint();
   if (t.dataset.catName) {
     const c = state.categories.find((x) => x.id === t.dataset.catName);
     const v = t.value.trim();
-    if (c && v && v !== c.name) { c.name = v; c.updatedAt = nowStamp(); save(); render(); toast('已改名为 ' + v); }
+    if (c && v && v !== c.name) { c.name = v; c.updatedAt = nowStamp(); save(); render({ animate: false }); toast('已改名为 ' + v); }
     else if (c && !v) t.value = c.name;
   }
   if (t.dataset.rate) {
     const v = parseFloat(t.value);
-    if (Number.isFinite(v) && v > 0) { state.settings.rates[t.dataset.rate] = v; save(); render(); }
+    if (Number.isFinite(v) && v > 0) { state.settings.rates[t.dataset.rate] = v; save(); render({ animate: false }); }
     else t.value = state.settings.rates[t.dataset.rate];
   }
 });
 
 document.addEventListener('input', (e) => {
   if (e.target.closest('#edit-form') && e.target.name === 'name' && draft && !draft.icon) {
-    const p = $('#icon-preview');
-    if (p) p.innerHTML = appIcon({ name: e.target.value || '?' }, 56);
+    // Swap the placeholder only when its letter changes, so it pops once rather than on every keystroke.
+    const name = e.target.value || '?';
+    const i = $('#icon-pick .app-icon');
+    if (i && i.textContent !== name.trim().charAt(0).toUpperCase()) i.outerHTML = appIcon({ name }, 60);
   }
 });
 
@@ -812,23 +924,25 @@ document.addEventListener('submit', (e) => {
   if (e.target.id === 'cat-add') {
     const name = e.target.name.value.trim();
     if (!name) return;
-    if (state.categories.some((c) => c.name === name)) { toast('已经有这个大类了'); return; }
+    if (state.categories.some((c) => c.name === name)) { toast('已经有这个大类了', 'alert'); return; }
     state.categories.push({ id: uid(), name, order: state.categories.length, updatedAt: nowStamp() });
-    save(); render(); openCats();
+    save(); render({ animate: false }); openCats(true);
   }
   if (e.target.id === 'edit-form') saveEdit();
 });
 
-// Close the sheet when the backdrop (outside the panel) is tapped.
 document.addEventListener('DOMContentLoaded', () => {
-  sheet().addEventListener('click', (e) => {
-    const r = sheet().getBoundingClientRect();
-    if (e.target === sheet() && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closeSheet();
+  const d = sheet();
+  // Tapping the dimmed backdrop, or pressing Esc, closes the sheet with its exit animation.
+  d.addEventListener('click', (e) => {
+    const r = d.getBoundingClientRect();
+    if (e.target === d && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closeSheet();
   });
+  d.addEventListener('cancel', (e) => { e.preventDefault(); closeSheet(); });
   render();
-  // Re-render when the day changes or the app comes back to the foreground.
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
-  window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { state = load(); render(); } });
+  // Refresh the day counts when the app comes back to the foreground.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet().open) render({ animate: false }); });
+  window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { state = load(); render({ animate: false }); } });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
