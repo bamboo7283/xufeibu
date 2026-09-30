@@ -30,6 +30,19 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const pad = (n) => String(n).padStart(2, '0');
 const nowStamp = () => new Date().toISOString();
 
+function supportsFlexGap() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'display:flex;flex-direction:column;row-gap:1px;position:absolute;visibility:hidden';
+  const child = document.createElement('span');
+  child.style.height = '1px';
+  probe.appendChild(child.cloneNode());
+  probe.appendChild(child);
+  document.body.appendChild(probe);
+  const supported = probe.scrollHeight === 3;
+  probe.remove();
+  return supported;
+}
+
 function parseD(iso) { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); }
 function toISO(dt) { return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate()); }
 function todayISO() { return toISO(new Date()); }
@@ -80,9 +93,6 @@ const GLYPHS = {
   up: '<path d="M7 14l5-5 5 5"/>',
   down: '<path d="M7 10l5 5 5-5"/>',
   sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
-  cloud: '<path d="M7 18.5h10.25a4.25 4.25 0 0 0 .6-8.46A6 6 0 0 0 6.3 9.6 4.5 4.5 0 0 0 7 18.5z"/>',
-  key: '<circle cx="8" cy="15.5" r="3.75"/><path d="M10.75 12.75L19 4.5M15.75 7.75l2.5 2.5M17.75 5.75l2 2"/>',
-  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.75a2.25 2.25 0 0 0-2.25-2.25h-6.5A2.25 2.25 0 0 0 4.5 6.75v6.5a2.25 2.25 0 0 0 2.25 2.25H8.5"/>',
   ticket: '<path d="M3.75 7.5A1.5 1.5 0 0 1 5.25 6h13.5a1.5 1.5 0 0 1 1.5 1.5v2.25a2.25 2.25 0 0 0 0 4.5v2.25a1.5 1.5 0 0 1-1.5 1.5H5.25a1.5 1.5 0 0 1-1.5-1.5v-2.25a2.25 2.25 0 0 0 0-4.5z"/><path d="M15 6.5v1.5M15 11.25v1.5M15 16v1.5"/>'
 };
 function icon(name, size = 18) {
@@ -91,7 +101,7 @@ function icon(name, size = 18) {
 
 /* ================= state ================= */
 function emptyState() {
-  return { version: 1, categories: [], subs: [], deleted: [], settings: { rates: { ...DEFAULT_RATES }, soonWindow: 7, defaultLead: 3, view: 'card' } };
+  return { version: 1, categories: [], subs: [], deleted: [], settings: { rates: Object.assign({}, DEFAULT_RATES), soonWindow: 7, defaultLead: 3, view: 'card' } };
 }
 function normalize(raw) {
   const s = emptyState();
@@ -101,7 +111,7 @@ function normalize(raw) {
   if (Array.isArray(raw.deleted)) s.deleted = raw.deleted.filter((d) => d && d.id);
   if (raw.settings) {
     Object.assign(s.settings, raw.settings);
-    s.settings.rates = { ...DEFAULT_RATES, ...(raw.settings.rates || {}) };
+    s.settings.rates = Object.assign({}, DEFAULT_RATES, raw.settings.rates || {});
   }
   return s;
 }
@@ -115,129 +125,93 @@ function normalizeSub(x) {
     createdAt: x.createdAt || nowStamp(), updatedAt: x.updatedAt || nowStamp()
   };
 }
-function load() {
-  try { return normalize(JSON.parse(localStorage.getItem(STORE_KEY))); } catch (e) { return emptyState(); }
-}
-let state = load();
-const ui = { filter: 'all', shown: { monthly: 0, yearly: 0 } };
+let state = emptyState();
+let storageKind = 'browser';
+let storageApi = null;
+let saveQueue = Promise.resolve();
+const ui = { filter: 'all', visibleLimit: 60, shown: { monthly: 0, yearly: 0 } };
 
-function persist() {
-  try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
-  } catch (e) {
-    toast('保存失败：浏览器存储空间不足，试试删掉几个大图标', 'alert');
-    return false;
-  }
-  if (navigator.storage && navigator.storage.persist && !persist.asked) { persist.asked = true; navigator.storage.persist().catch(() => {}); }
-  return true;
+function browserRead() {
+  try { return localStorage.getItem(STORE_KEY); } catch (e) { return null; }
 }
-// Every local change is saved on the device first, then pushed to the cloud shortly after.
+function clientVersion(options) {
+  const env = options && options.miniToolEnv;
+  const build = Number(env && env.buildVersion) || 0;
+  return Math.floor(build / 1000);
+}
+function readNativeState(value) {
+  // A key that has never been written can come back as an empty string.
+  if (value === null || value === undefined || value === '') return null;
+  let raw = value;
+  if (typeof raw === 'string') raw = JSON.parse(raw);
+  if (raw === null || (raw && typeof raw === 'object' && !Array.isArray(raw) && !Object.keys(raw).length)) return null;
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.subs) || !Array.isArray(raw.categories)) {
+    throw new Error('invalid stored state');
+  }
+  return normalize(raw);
+}
+async function initStorage() {
+  const xhs = window.xhs;
+  const api = xhs && xhs.miniTool;
+  let options = xhs && xhs.launchOptions;
+  if (!clientVersion(options) && api && typeof api.getLaunchOptions === 'function') {
+    try { options = await api.getLaunchOptions(); } catch (e) { options = null; }
+  }
+  if (clientVersion(options) >= 9460 && api && typeof api.getStorage === 'function' && typeof api.setStorage === 'function') {
+    storageKind = 'xhs';
+    storageApi = api;
+    let stored;
+    try { stored = await api.getStorage({ key: STORE_KEY }); }
+    catch (e) { throw new Error('小红书本地数据暂时读取失败，请稍后重试'); }
+    const nativeData = stored && stored.data;
+    let parsed;
+    try { parsed = readNativeState(nativeData); }
+    catch (e) { throw new Error('本地数据格式异常，请先不要清理小红书数据'); }
+    if (parsed) {
+      state = parsed;
+      return;
+    }
+    state = emptyState();
+    // A client upgrade can expose native storage after earlier browser-storage use.
+    const legacy = browserRead();
+    if (legacy) {
+      try {
+        state = normalize(JSON.parse(legacy));
+        await api.setStorage({ key: STORE_KEY, data: JSON.stringify(state) });
+      } catch (e) { throw new Error('旧版数据迁移失败，请稍后重试'); }
+    }
+    return;
+  }
+  const legacy = browserRead();
+  if (legacy) {
+    try { state = normalize(JSON.parse(legacy)); }
+    catch (e) { state = emptyState(); }
+  }
+}
 function save() {
-  const ok = persist();
-  if (ok) scheduleSync();
-  return ok;
-}
-
-/* ================= cloud sync (a secret GitHub gist) ================= */
-const SYNC_KEY = 'xufeibu:sync';
-const DATA_FILE = 'shijian-data.json';
-const ICS_FILE = 'shijian.ics';
-const GH_API = 'https://api.github.com';
-const TOKEN_URL = 'https://github.com/settings/tokens/new?description=' + encodeURIComponent('时笺同步') + '&scopes=gist';
-const SYNC_LABEL = { idle: '已开启同步', busy: '同步中…', ok: '已同步', offline: '离线，联网后自动同步', auth: '同步令牌失效', missing: '找不到云端数据', error: '同步出错，稍后重试' };
-let sync = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || null; } catch (e) { return null; } })();
-const syncUI = { busy: false, queued: false, timer: 0, status: 'idle' };
-
-function saveSyncConfig() { try { if (sync) localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); else localStorage.removeItem(SYNC_KEY); } catch (e) { /* private mode */ } }
-const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-// Sorted, so two devices holding the same records produce the same text and never push back and forth.
-function dataPayload() {
-  return JSON.stringify({ app: 'xufeibu', version: 1, categories: [...state.categories].sort(byId), subs: [...state.subs].sort(byId), deleted: [...state.deleted].sort(byId) });
-}
-function feedICS() { return buildICS(state.subs.filter((x) => !x.paused && x.nextDue).sort(byId), true); }
-function calendarPath() { return sync && sync.gistId ? `gist.githubusercontent.com/${sync.owner}/${sync.gistId}/raw/${ICS_FILE}` : ''; }
-
-async function gh(path, opts = {}, token = sync && sync.token) {
-  let res;
+  let serialized;
   try {
-    res = await fetch(GH_API + path, {
-      method: opts.method || 'GET', cache: 'no-store', body: opts.body,
-      headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }
-    });
-  } catch (e) { throw Object.assign(new Error('offline'), { code: 'offline' }); }
-  if (!res.ok) throw Object.assign(new Error('http ' + res.status), { code: { 401: 'auth', 403: 'forbidden', 404: 'missing' }[res.status] || 'error' });
-  return res;
-}
-function syncStatusHTML() {
-  if (!sync) return '';
-  const s = syncUI.status;
-  const tone = s === 'busy' ? 'busy' : s === 'offline' || s === 'error' ? 'warn' : s === 'auth' || s === 'missing' ? 'err' : 'ok';
-  return `<button class="sync-status ${tone}" data-act="settings" aria-label="同步设置"><i></i>${SYNC_LABEL[s] || ''}</button>`;
-}
-function setSyncStatus(s) { syncUI.status = s; const el = $('#sync-status'); if (el) el.innerHTML = syncStatusHTML(); }
-function scheduleSync(delay = 1200) { if (!sync) return; clearTimeout(syncUI.timer); syncUI.timer = setTimeout(syncNow, delay); }
-
-// Pull the cloud copy, merge it with this device (newer edits win, deletions stick), then push the result and the calendar feed.
-async function syncNow() {
-  if (!sync || !sync.gistId) return;
-  if (syncUI.busy) { syncUI.queued = true; return; }
-  syncUI.busy = true;
-  setSyncStatus('busy');
-  try {
-    const gist = await (await gh('/gists/' + sync.gistId)).json();
-    const files = gist.files || {};
-    const f = files[DATA_FILE];
-    let remoteText = '';
-    if (f) remoteText = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
-    const before = dataPayload();
-    if (remoteText) { try { mergeState(normalize(JSON.parse(remoteText))); } catch (e) { /* unreadable cloud copy: this device's copy replaces it */ } }
-    const after = dataPayload();
-    if (after !== before) { persist(); render({ animate: false }); }
-    const ics = feedICS();
-    const icsFile = files[ICS_FILE];
-    if (after !== remoteText || !icsFile || icsFile.truncated || icsFile.content !== ics) {
-      await gh('/gists/' + sync.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [DATA_FILE]: { content: after }, [ICS_FILE]: { content: ics } } }) });
-    }
-    sync.lastSync = nowStamp();
-    saveSyncConfig();
-    setSyncStatus('ok');
+    serialized = JSON.stringify(state);
   } catch (e) {
-    setSyncStatus({ auth: 'auth', missing: 'missing', offline: 'offline' }[e.code] || 'error');
-  } finally {
-    syncUI.busy = false;
-    if (syncUI.queued) { syncUI.queued = false; syncNow(); }
+    toast('保存失败：数据无法序列化', 'alert');
+    return Promise.resolve(false);
   }
-}
-
-async function connectSync(token) {
-  token = (token || '').trim();
-  if (token.length < 20) { toast('请粘贴完整的 GitHub 令牌', 'alert'); return; }
-  const btn = $('[data-act="sync-connect"]');
-  if (btn) { btn.disabled = true; btn.textContent = '连接中…'; }
-  try {
-    const user = await (await gh('/user', {}, token)).json();
-    // A second device finds the gist the first one created, by its data file.
-    let gistId = '';
-    for (let page = 1; page <= 10 && !gistId; page++) {
-      const list = await (await gh(`/gists?per_page=100&page=${page}`, {}, token)).json();
-      const hit = list.find((g) => g.files && g.files[DATA_FILE]);
-      if (hit) gistId = hit.id;
-      if (list.length < 100) break;
-    }
-    if (!gistId) {
-      const created = await (await gh('/gists', { method: 'POST', body: JSON.stringify({ description: '时笺同步数据（由时笺 App 自动维护，请勿删除）', public: false, files: { [DATA_FILE]: { content: dataPayload() }, [ICS_FILE]: { content: feedICS() } } }) }, token)).json();
-      gistId = created.id;
-    }
-    sync = { token, owner: user.login, gistId, lastSync: '' };
-    saveSyncConfig();
-    await syncNow();
-    render({ animate: false });
-    openSettings(true);
-    toast(syncUI.status === 'ok' ? '已连接，数据已同步' : '已连接，稍后自动同步', 'cloud');
-  } catch (e) {
-    toast({ auth: '令牌无效，请确认复制完整', forbidden: '这个令牌没有 gist 权限，请按步骤重新创建', missing: '这个令牌没有 gist 权限，请按步骤重新创建', offline: '网络不通，请稍后再试' }[e.code] || '连接失败，请稍后再试', 'alert');
-    if (btn) { btn.disabled = false; btn.textContent = '连接'; }
+  if (new Blob([serialized]).size > 1024 * 1024) {
+    toast('数据已超过小红书单项存储上限，请缩小或移除部分图标', 'alert');
+    return Promise.resolve(false);
   }
+  const pending = saveQueue.then(async () => {
+    try {
+      if (storageKind === 'xhs') await storageApi.setStorage({ key: STORE_KEY, data: serialized });
+      else localStorage.setItem(STORE_KEY, serialized);
+      return true;
+    } catch (e) {
+      toast('保存失败，请稍后重试或先导出备份', 'alert');
+      return false;
+    }
+  });
+  saveQueue = pending.then(() => undefined);
+  return pending;
 }
 
 /* ================= derived ================= */
@@ -251,7 +225,7 @@ function statusOf(s) {
   if (s.paused) return { status: 'paused', label: '已停订', days: Infinity };
   if (!s.nextDue) return { status: 'active', label: '未设到期日', days: Infinity };
   const days = daysBetween(todayISO(), s.nextDue);
-  return { ...describeDue(days, Math.max(state.settings.soonWindow, s.lead)), days };
+  return Object.assign({}, describeDue(days, s.lead), { days });
 }
 // Share of the current billing period already used (0–1), or null when it can't be told.
 function cycleOf(s) {
@@ -336,15 +310,13 @@ function render(opts = {}) {
 
   app.innerHTML = `
     <header class="top">
-      <div class="top-title"><h1>时笺</h1><p class="date">${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}<span id="sync-status">${syncStatusHTML()}</span></p></div>
+      <div class="top-title"><h1>续费手账</h1><p class="date">${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAYS[now.getDay()]}</p></div>
       <div class="top-actions">
         <button class="btn btn-primary" data-act="add" aria-label="添加会员">${icon('plus')}<span class="btn-label">添加会员</span></button>
         <div class="menu-wrap">
           <button class="btn icon-btn" data-act="menu" aria-label="更多" aria-haspopup="menu" aria-expanded="false">${icon('more')}</button>
           <div class="menu" role="menu" hidden>
             <button role="menuitem" data-act="cats">${icon('folder')}管理大类</button>
-            <button role="menuitem" data-act="ics-all">${icon('calendar')}${useSubscription() ? '订阅到日历' : '全部加到日历'}</button>
-            <hr>
             <button role="menuitem" data-act="export">${icon('upload')}导出备份</button>
             <button role="menuitem" data-act="import">${icon('download')}导入备份</button>
             <hr>
@@ -353,6 +325,7 @@ function render(opts = {}) {
         </div>
       </div>
     </header>
+    ${storageKind === 'browser' && window.xhs ? '<p class="storage-warning">当前小红书版本仅能使用临时浏览器存储。请升级小红书，并定期保存备份图。</p>' : ''}
     ${has ? `<section class="hero glass">
       <div>
         <span class="hero-label">每月会员支出约</span>
@@ -365,7 +338,7 @@ function render(opts = {}) {
         ${count('overdue') ? `<span class="stat stat-overdue"><b>${count('overdue')}</b>已过期</span>` : ''}
       </div>
     </section>` : ''}
-    ${attention.length ? `<div class="attention glass" role="status"><span class="attention-title">${icon('bell', 16)}需要留意</span>${attention.map((x) => `<button class="att-item ${x.st.status}" data-open="${x.s.id}">${appIcon(x.s, 28)}${esc(x.s.name)}<span class="tag">${esc(x.st.label)}</span></button>`).join('')}</div>` : ''}
+    ${attention.length ? `<div class="attention glass" role="status"><span class="attention-title">${icon('bell', 16)}需要留意</span>${attention.slice(0, 8).map((x) => `<button class="att-item ${x.st.status}" data-open="${x.s.id}">${appIcon(x.s, 28)}${esc(x.s.name)}<span class="tag">${esc(x.st.label)}</span></button>`).join('')}${attention.length > 8 ? `<span class="attention-more">另有 ${attention.length - 8} 项</span>` : ''}</div>` : ''}
     ${has ? `<div class="toolbar">
       <div class="filters" role="group" aria-label="按大类筛选">${chipsHTML()}</div>
       <div class="seg glass" role="radiogroup" aria-label="显示方式" data-value="${view}">
@@ -392,7 +365,7 @@ function renderMain(animate) {
     main.innerHTML = `<div class="empty glass">
       <div class="empty-art">${icon('ticket', 40)}</div>
       <h2>还没有记录任何会员</h2>
-      <p>把 Claude、ChatGPT 这些会员记下来：什么套餐、上次什么时候续的、花了多少，到期前提醒你。</p>
+      <p>记下会员的套餐、花费和到期日。打开小工具时，就能看到近期到期的项目。</p>
       <div class="actions"><button class="btn btn-primary" data-act="add">${icon('plus')}添加会员</button><button class="btn" data-act="demo">${icon('sparkle')}载入示例看看</button></div>
     </div>`;
     return;
@@ -400,14 +373,21 @@ function renderMain(animate) {
   const view = state.settings.view;
   let k = 0;
   const cats = sortedCategories().filter((c) => ui.filter === 'all' || c.id === ui.filter);
-  main.innerHTML = cats.map((c) => {
+  let remaining = ui.visibleLimit;
+  let total = 0;
+  const sections = cats.map((c) => {
     const list = subsIn(c.id);
-    if (!list.length) return '';
+    total += list.length;
+    if (!list.length || remaining <= 0) return '';
+    const visible = list.slice(0, remaining);
+    remaining -= visible.length;
     const head = catHead(c.name, list, k);
-    const items = list.map((s) => (view === 'card' ? card : row)(s, ++k)).join('');
+    const items = visible.map((s) => (view === 'card' ? card : row)(s, ++k)).join('');
     k += 1;
     return `<section class="group">${head}${view === 'card' ? `<div class="grid">${items}</div>` : `<div class="list glass">${items}</div>`}</section>`;
-  }).join('') || '<div class="empty glass"><p style="margin:0">这个大类下还没有会员。</p></div>';
+  }).join('');
+  main.innerHTML = (sections || '<div class="empty glass"><p style="margin:0">这个大类下还没有会员。</p></div>') +
+    (total > ui.visibleLimit ? `<button class="btn load-more" data-act="show-more">再看 60 项（还有 ${total - ui.visibleLimit} 项）</button>` : '');
 }
 function countUp(el, from, to, done) {
   if (!el) return;
@@ -479,13 +459,12 @@ function openDetail(id) {
     <div class="tiles">
       <div class="tile"><span class="k">上次续费</span><span class="v">${fmtDate(s.lastPaid)}</span></div>
       <div class="tile"><span class="k">${s.paused ? '到期后' : '下次到期'}</span><span class="v">${s.paused ? '不再续费' : fmtDate(s.nextDue)}</span></div>
-      <div class="tile"><span class="k">提醒</span><span class="v">${s.lead === 0 ? '到期当天' : '提前 ' + s.lead + ' 天'}</span></div>
+      <div class="tile"><span class="k">首页提示</span><span class="v">${s.lead === 0 ? '到期当天' : '提前 ' + s.lead + ' 天'}</span></div>
       <div class="tile"><span class="k">${foreign ? '折合每月' : '扣费方式'}</span><span class="v">${foreign ? '¥ ' + fmtNum(Math.round(monthlyCNY(s))) : s.autoRenew ? '自动续费' : '手动续费'}</span></div>
     </div>
     ${s.note ? `<p class="note">${esc(s.note)}</p>` : ''}
     <div class="detail-actions">
       ${s.paused ? '' : `<button class="btn btn-primary" data-act="renew" data-id="${s.id}">${icon('renew')}记一笔续费</button>`}
-      ${s.paused || !s.nextDue ? '' : `<button class="btn" data-act="ics" data-id="${s.id}">${icon('calendar')}${useSubscription() ? '日历提醒' : '加到日历'}</button>`}
       <button class="btn" data-act="edit" data-id="${s.id}">${icon('edit')}编辑</button>
     </div>
     <div>
@@ -530,7 +509,7 @@ function renderEdit(isEdit, still = false) {
     `<option value=""${!known && !isNewCat ? ' selected' : ''}>未分类</option><option value="__new"${isNewCat ? ' selected' : ''}>+ 新建大类…</option>`;
   const body = `<form class="form" id="edit-form" novalidate>
     <div class="field"><span class="field-label">图标</span><div class="icon-pick" id="icon-pick">${iconPickHTML()}</div>
-      <span class="field-hint">从相册或文件选一张图，会自动裁成正方形。可以在 App Store 截图后裁出图标。</span></div>
+      <span class="field-hint">从相册选一张图片，会自动裁成正方形。</span></div>
     ${field('软件名称', `<input name="name" required maxlength="40" placeholder="例如 Claude" value="${esc(d.name)}" autocomplete="off">`)}
     ${field('大类', `<select name="categoryId">${catOpts}</select>${icon('down', 16)}`)}
     <label class="field" id="new-cat" ${isNewCat ? '' : 'hidden'}><span class="field-label">新大类名称</span><span class="field-box"><input name="newCat" placeholder="例如 AI 工具、影音娱乐" maxlength="20" value="${esc(d.newCat || '')}"></span></label>
@@ -544,8 +523,8 @@ function renderEdit(isEdit, still = false) {
       ${field('上次续费日期', `<input type="date" name="lastPaid" value="${esc(d.lastPaid)}">`)}
       ${field('下次到期', `<input type="date" name="nextDue" value="${esc(d.nextDue)}">`, `<span id="next-hint">${nextHint()}</span>`)}
     </div>
-    <div class="field"><span class="field-label">到期提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-lead="${n}" aria-pressed="${d.lead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div>
-      <span class="field-hint">保存后点「加到日历」，iPhone 和 Mac 的日历会在这个时间提醒你。</span></div>
+    <div class="field"><span class="field-label">首页到期提示</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-lead="${n}" aria-pressed="${d.lead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div>
+      <span class="field-hint">打开小工具时，会在首页标出近期到期和已过期的会员；小红书内没有系统通知。</span></div>
     <label class="switch-row"><span>自动续费（到期自动扣款）</span><input type="checkbox" class="switch" name="autoRenew" ${d.autoRenew ? 'checked' : ''}></label>
     ${field('备注', `<textarea name="note" rows="2" maxlength="500" placeholder="例如 绑定招行信用卡、用的是美区 Apple ID">${esc(d.note)}</textarea>`)}
   </form>`;
@@ -578,7 +557,7 @@ function updateNextAuto() {
   const h = $('#next-hint');
   if (h) h.innerHTML = nextHint();
 }
-function saveEdit() {
+async function saveEdit() {
   readDraftFromForm();
   const amount = parseFloat(String(draft.amount).replace(/,/g, ''));
   if (!draft.name) { toast('请填写软件名称', 'alert'); $('#edit-form [name="name"]').focus(); return; }
@@ -595,10 +574,10 @@ function saveEdit() {
   }
   const isNew = !draft.id;
   const existing = isNew ? null : findSub(draft.id);
-  const sub = normalizeSub({ ...(existing || {}), ...draft, id: draft.id || uid(), categoryId, amount, updatedAt: nowStamp(), createdAt: existing ? existing.createdAt : nowStamp() });
+  const sub = normalizeSub(Object.assign({}, existing || {}, draft, { id: draft.id || uid(), categoryId, amount, updatedAt: nowStamp(), createdAt: existing ? existing.createdAt : nowStamp() }));
   if (isNew && sub.lastPaid) sub.history = [{ id: uid(), date: sub.lastPaid, amount: sub.amount, currency: sub.currency, plan: sub.plan }];
   if (isNew) state.subs.push(sub); else state.subs[state.subs.findIndex((s) => s.id === sub.id)] = sub;
-  if (!save()) return;
+  if (!await save()) return;
   render();
   toast(isNew ? '已添加 ' + sub.name : '已保存');
   if (isNew) closeSheet(); else openDetail(sub.id);
@@ -609,8 +588,11 @@ function pickIcon() {
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = 'image/*';
+  inp.style.display = 'none';
+  document.body.appendChild(inp);
   inp.onchange = async () => {
     const file = inp.files && inp.files[0];
+    inp.remove();
     if (!file) return;
     try {
       draft.icon = await fileToIcon(file);
@@ -670,7 +652,7 @@ function updateRenewHint() {
   const date = f.date.value;
   $('#renew-next').textContent = isISO(date) ? '下次到期会更新为 ' + fmtDateFull(renewNextDue(s, date)) + '。' : '';
 }
-function saveRenew(id) {
+async function saveRenew(id) {
   const f = $('#renew-form');
   const s = findSub(id);
   const date = f.date.value;
@@ -688,7 +670,7 @@ function saveRenew(id) {
     s.currency = currency;
   }
   s.updatedAt = nowStamp();
-  if (!save()) return;
+  if (!await save()) return;
   render();
   openDetail(id);
   toast('已记下，下次到期 ' + fmtDate(s.nextDue));
@@ -713,166 +695,30 @@ function openCats(still = false) {
   <p class="field-hint" style="margin:12px 0 0 4px">改名后点输入框外面就会保存。删除大类时，里面的会员会移到「未分类」。</p>`;
   openSheet('管理大类', body, '', { still });
 }
-function moveCat(id, dir) {
+async function moveCat(id, dir) {
   const cats = [...state.categories].sort((a, b) => a.order - b.order);
   const i = cats.findIndex((c) => c.id === id), j = i + dir;
   if (j < 0 || j >= cats.length) return;
   [cats[i], cats[j]] = [cats[j], cats[i]];
   cats.forEach((c, k) => { c.order = k; c.updatedAt = nowStamp(); });
-  save(); render({ animate: false }); openCats(true);
+  if (await save()) { render({ animate: false }); openCats(true); }
 }
 
 /* ---------- settings ---------- */
-function syncSectionHTML() {
-  if (!sync) {
-    return `<div class="sync-card">
-      <div class="sync-head">${icon('cloud', 22)}<div><p class="sync-title">手机和电脑自动同步</p><p class="sync-sub">用你的 GitHub 账号存一份数据，两台设备自动同步，还能订阅成 iPhone 日历提醒。</p></div></div>
-      <ol class="steps">
-        <li>点「创建令牌」并登录 GitHub；<b>Expiration</b> 选 <b>No expiration</b>，拉到最下面点 <b>Generate token</b>。</li>
-        <li>复制生成的令牌（ghp_ 开头），粘贴到下面，点「连接」。</li>
-        <li>另一台设备也做一次（再建一个令牌也行），两边就会自动同步。</li>
-      </ol>
-      <div class="choice-row"><a class="btn btn-sm" href="${TOKEN_URL}" target="_blank" rel="noopener">${icon('key', 16)}创建令牌</a></div>
-      <div class="sync-connect">${field('GitHub 令牌', '<input id="sync-token" type="password" placeholder="ghp_…" autocomplete="off" autocapitalize="off" spellcheck="false">')}<button class="btn btn-primary" data-act="sync-connect">连接</button></div>
-      <p class="field-hint" style="margin:0">令牌只存在这台设备上，只能读写 gist（GitHub 上的小笔记），碰不到你的代码仓库。</p>
-    </div>`;
-  }
-  const last = sync.lastSync ? new Date(sync.lastSync) : null;
-  const when = last ? `上次同步 ${last.getMonth() + 1}月${last.getDate()}日 ${pad(last.getHours())}:${pad(last.getMinutes())}` : '还没同步过';
-  const fix = syncUI.status === 'auth' ? '<p class="field-hint" style="margin:0;color:var(--coral)">令牌失效或被删除了：点「断开」，再用新令牌重新连接。</p>' : '';
-  return `<div class="sync-card">
-    <div class="sync-head">${icon('cloud', 22)}<div><p class="sync-title">已开启同步 · ${esc(sync.owner)}</p><p class="sync-sub">${when} · ${SYNC_LABEL[syncUI.status] || ''}</p></div></div>
-    ${fix}
-    <div class="choice-row"><button class="btn btn-sm btn-primary" data-act="cal-sub">${icon('calendar', 16)}订阅到日历</button><button class="btn btn-sm" data-act="sync-now">${icon('renew', 16)}立即同步</button><button class="btn btn-sm btn-danger" data-act="sync-off">断开</button></div>
-  </div>`;
-}
-function openSettings(still = false) {
+function openSettings() {
   const st = state.settings;
-  const body = `${syncSectionHTML()}
-    <div class="field"><span class="field-label">汇率（1 单位外币 = 多少人民币），用于估算每月花费</span>
+  const body = `<div class="field"><span class="field-label">汇率（1 单位外币 = 多少人民币），用于估算每月花费</span>
       <div class="rates">${Object.entries(CURRENCIES).filter(([k]) => k !== 'CNY').map(([k, v]) => field(`${v.name} ${v.sym}`, `<input data-rate="${k}" inputmode="decimal" value="${esc(st.rates[k])}">`)).join('')}</div>
     </div>
-    <div class="field" style="margin-top:18px"><span class="field-label">提前几天算「即将到期」</span><div class="choice-row">${[3, 7, 14].map((n) => `<button type="button" class="chip" data-soon="${n}" aria-pressed="${st.soonWindow === n}">${n} 天</button>`).join('')}</div></div>
-    <div class="field" style="margin-top:18px"><span class="field-label">新会员默认提醒</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-deflead="${n}" aria-pressed="${st.defaultLead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div></div>
+    <div class="field" style="margin-top:18px"><span class="field-label">新会员默认提前几天在首页提示</span><div class="choice-row">${LEADS.map((n) => `<button type="button" class="chip" data-deflead="${n}" aria-pressed="${st.defaultLead === n}">${n === 0 ? '当天' : '提前 ' + n + ' 天'}</button>`).join('')}</div></div>
     <div class="field" style="margin-top:18px"><span class="field-label">数据</span>
-      <span class="field-hint">${sync ? '数据保存在这台设备上，并同步到你的 GitHub。' : '数据只保存在这台设备里。换设备或清理浏览器数据前，记得先「导出备份」。'}</span>
+      <span class="field-hint">数据只保存在当前小红书小工具中。换设备或清理数据前，请先将备份图保存到相册。</span>
       <div class="choice-row" style="margin-top:6px"><button class="btn btn-sm" data-act="export">${icon('upload', 16)}导出备份</button><button class="btn btn-sm" data-act="import">${icon('download', 16)}导入备份</button><button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 16)}清空全部数据</button></div>
     </div>`;
-  openSheet('设置', body, '', { still });
+  openSheet('设置', body, '');
 }
 
-/* ================= calendar (.ics) ================= */
-function icsEscape(s) { return String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
-function icsFold(line) {
-  const enc = new TextEncoder();
-  if (enc.encode(line).length <= 75) return line;
-  const out = [];
-  let cur = '', bytes = 0, limit = 75;
-  for (const ch of line) {
-    const b = enc.encode(ch).length;
-    if (bytes + b > limit) { out.push(cur); cur = ''; bytes = 0; limit = 74; }
-    cur += ch; bytes += b;
-  }
-  out.push(cur);
-  return out.join('\r\n ');
-}
-function rruleFor(s) {
-  const day = parseD(s.nextDue).getDate();
-  const monthDay = day > 28 ? ';BYMONTHDAY=' + Array.from({ length: day - 27 }, (_, i) => 28 + i).join(',') + ';BYSETPOS=-1' : '';
-  switch (s.cycle) {
-    case 'week': return 'FREQ=WEEKLY';
-    case 'month': return 'FREQ=MONTHLY' + monthDay;
-    case 'quarter': return 'FREQ=MONTHLY;INTERVAL=3' + monthDay;
-    case 'halfyear': return 'FREQ=MONTHLY;INTERVAL=6' + monthDay;
-    default: return 'FREQ=YEARLY';
-  }
-}
-function veventFor(s) {
-  const start = s.nextDue.replace(/-/g, '');
-  const end = addDays(s.nextDue, 1).replace(/-/g, '');
-  // Stamped with the record's last edit, so the same data always yields the same file.
-  const stamp = new Date(s.updatedAt || Date.now()).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  // All-day event: alarms are relative to 00:00 of the due date, so fire at 09:00 local time.
-  const trigger = s.lead === 0 ? 'PT9H' : '-P' + (s.lead - 1) + 'DT15H';
-  const title = `续费：${s.name}${s.plan ? ' ' + s.plan : ''}（${money(s.currency, s.amount)}）`;
-  const desc = [`${catName(s.categoryId)} · ${planLine(s)}`, `${money(s.currency, s.amount)} / ${unitOf(s.cycle)}`, s.autoRenew ? '自动续费' : '需要手动续费', s.note].filter(Boolean).join('\n');
-  return [
-    'BEGIN:VEVENT', `UID:${s.id}@xufeibu`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${start}`, `DTEND;VALUE=DATE:${end}`,
-    `RRULE:${rruleFor(s)}`, `SUMMARY:${icsEscape(title)}`, `DESCRIPTION:${icsEscape(desc)}`, 'TRANSP:TRANSPARENT',
-    'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsEscape(s.name + (s.lead === 0 ? ' 今天到期' : ' ' + s.lead + ' 天后到期'))}`, `TRIGGER:${trigger}`, 'END:VALARM',
-    'END:VEVENT'
-  ];
-}
-function buildICS(list, feed = false) {
-  const head = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//XuFeiBu//Renewals//ZH', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:时笺'];
-  if (feed) head.push('X-WR-CALDESC:时笺会员到期提醒', 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H');
-  const lines = head.concat(...list.map(veventFor), ['END:VCALENDAR']);
-  return lines.map(icsFold).join('\r\n') + '\r\n';
-}
-const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-// iPhone home-screen apps can't open calendar files made in the page, so there the calendar comes from a subscription.
-const useSubscription = () => !!sync || isIOS();
-function deliverICS(list, filename) {
-  downloadBlob(new Blob([buildICS(list)], { type: 'text/calendar;charset=utf-8' }), filename);
-  toast('已下载日历文件，双击它就能加到「日历」', 'calendar');
-}
-function openCalSheet() {
-  if (!sync) {
-    openSheet('日历提醒', `<p style="margin:0 0 16px">iPhone 的主屏幕 App 打不开日历文件，所以改用「订阅日历」：先开启同步，再订阅一次，以后增删改会员，日历都会自动更新。</p>
-      <div class="form"><button class="btn btn-primary" data-act="settings">${icon('cloud')}去开启同步</button></div>`, '');
-    return;
-  }
-  const path = calendarPath();
-  openSheet('订阅到日历', `
-    <p style="margin:0 0 16px">订阅一次，「日历」里就会多出一个「时笺」日历，每个会员的到期日都在上面，按你设的时间提醒。以后在这里增删改，日历会自动跟着更新。</p>
-    <div class="form"><a class="btn btn-primary" href="webcal://${path}">${icon('calendar')}订阅「时笺」日历</a>
-      <button class="btn" data-act="copy-cal">${icon('copy')}复制订阅链接</button></div>
-    <ol class="steps" style="margin:18px 0 12px">
-      <li>点上面的按钮，在弹窗里点「订阅」，再点「添加」。</li>
-      <li><b>打开提醒：</b>到 iPhone「设置 → App → 日历 → 日历账户 → 已订阅的日历 → 时笺」，把「移除提醒」关掉。</li>
-      <li>Mac 上也点一次这个按钮（或在「日历」App 里选「文件 → 新建日历订阅」粘贴链接），在弹窗的「移除」里取消勾选「提醒」。</li>
-    </ol>
-    <p class="field-hint" style="margin:0">日历大约每小时刷新一次，刚改的内容可能要等一会儿才出现。以前手动加过的续费事件可以删掉，免得重复。</p>`, '');
-}
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-/* ================= backup ================= */
-async function exportBackup() {
-  const name = `时笺备份-${todayISO()}.json`;
-  const blob = new Blob([JSON.stringify({ app: 'xufeibu', exportedAt: nowStamp(), ...state }, null, 1)], { type: 'application/json' });
-  const file = typeof File === 'function' ? new File([blob], name, { type: 'application/json' }) : null;
-  if (isIOS() && file && navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
-  }
-  downloadBlob(blob, name);
-  toast('已导出 ' + name);
-}
-function importBackup() {
-  const inp = document.createElement('input');
-  inp.type = 'file';
-  inp.accept = '.json,application/json';
-  inp.onchange = async () => {
-    const file = inp.files && inp.files[0];
-    if (!file) return;
-    let incoming;
-    try { incoming = normalize(JSON.parse(await file.text())); } catch (e) { toast('这个文件不是时笺的备份', 'alert'); return; }
-    if (!incoming.subs.length && !incoming.categories.length) { toast('备份里没有数据', 'alert'); return; }
-    const body = `<p style="margin:0 0 16px">备份里有 <b>${incoming.subs.length}</b> 个会员、<b>${incoming.categories.length}</b> 个大类。这台设备现在有 ${state.subs.length} 个会员。</p>
-      <div class="form">
-        <button class="btn btn-primary" data-act="import-merge">合并：两边都保留，同一个会员以较新的修改为准</button>
-        <button class="btn btn-danger" data-act="import-replace">替换：用备份覆盖这台设备上的全部数据</button>
-      </div>`;
-    importBackup.pending = incoming;
-    openSheet('导入备份', body, '');
-  };
-  inp.click();
-}
+/* ================= backup images: see backup.js ================= */
 function mergeState(incoming) {
   const tomb = new Map();
   [...state.deleted, ...incoming.deleted].forEach((d) => { if (!tomb.has(d.id) || tomb.get(d.id) < d.at) tomb.set(d.id, d.at); });
@@ -893,26 +739,25 @@ function mergeState(incoming) {
 }
 
 /* ================= demo data ================= */
-function loadDemo() {
+async function loadDemo() {
   const t = todayISO();
   const cat = (name, order) => ({ id: uid(), name, order, updatedAt: nowStamp() });
   const ai = cat('AI 工具', 0), media = cat('影音娱乐', 1), cloud = cat('云存储', 2);
   const mk = (o) => {
-    const s = normalizeSub({ id: uid(), lead: 3, autoRenew: true, ...o });
+    const s = normalizeSub(Object.assign({ id: uid(), lead: 3, autoRenew: true }, o));
     s.history = [{ id: uid(), date: s.lastPaid, amount: s.amount, currency: s.currency, plan: s.plan }];
     return s;
   };
   const back = (cycle, daysAhead) => { const next = addDays(t, daysAhead); return { nextDue: next, lastPaid: addCycle(next, cycle, -1) }; };
   state.categories.push(ai, media, cloud);
   state.subs.push(
-    mk({ categoryId: ai.id, name: 'Claude', plan: 'Max 5x', cycle: 'month', currency: 'USD', amount: 100, ...back('month', 5) }),
-    mk({ categoryId: ai.id, name: 'ChatGPT', plan: 'Plus', cycle: 'month', currency: 'USD', amount: 20, ...back('month', 17) }),
-    mk({ categoryId: media.id, name: '网易云音乐', plan: '黑胶 VIP', cycle: 'year', currency: 'CNY', amount: 158, autoRenew: false, ...back('year', -5) }),
-    mk({ categoryId: media.id, name: '爱奇艺', plan: '黄金会员', cycle: 'month', currency: 'CNY', amount: 25, paused: true, ...back('month', 12) }),
-    mk({ categoryId: cloud.id, name: 'iCloud+', plan: '200GB', cycle: 'month', currency: 'CNY', amount: 21, ...back('month', 12) })
+    mk(Object.assign({ categoryId: ai.id, name: 'Claude', plan: 'Max 5x', cycle: 'month', currency: 'USD', amount: 100, lead: 7 }, back('month', 5))),
+    mk(Object.assign({ categoryId: ai.id, name: 'ChatGPT', plan: 'Plus', cycle: 'month', currency: 'USD', amount: 20 }, back('month', 17))),
+    mk(Object.assign({ categoryId: media.id, name: '网易云音乐', plan: '黑胶 VIP', cycle: 'year', currency: 'CNY', amount: 158, autoRenew: false }, back('year', -5))),
+    mk(Object.assign({ categoryId: media.id, name: '爱奇艺', plan: '黄金会员', cycle: 'month', currency: 'CNY', amount: 25, paused: true }, back('month', 12))),
+    mk(Object.assign({ categoryId: cloud.id, name: 'iCloud+', plan: '200GB', cycle: 'month', currency: 'CNY', amount: 21 }, back('month', 12)))
   );
-  save(); render();
-  toast('已载入示例，可以随时删掉', 'sparkle');
+  if (await save()) { render(); toast('已载入示例，可以随时删掉', 'sparkle'); }
 }
 
 /* ================= toast ================= */
@@ -929,7 +774,7 @@ function toast(msg, ic = 'check') {
 
 /* ================= events ================= */
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-act],[data-open],[data-filter],[data-view],[data-cycle],[data-lead],[data-soon],[data-deflead]');
+  const t = e.target.closest('[data-act],[data-open],[data-filter],[data-view],[data-cycle],[data-lead],[data-deflead]');
   if (menuOpen() && !(t && t.dataset.act === 'menu')) closeMenu();
   if (!t) return;
   const d = t.dataset;
@@ -938,13 +783,15 @@ document.addEventListener('click', async (e) => {
   if (d.filter) {
     if (ui.filter === d.filter) return;
     ui.filter = d.filter;
+    ui.visibleLimit = 60;
     setPressed('[data-filter]', (b) => b.dataset.filter === ui.filter);
     renderMain(true);
     return;
   }
   if (d.view) {
     if (state.settings.view === d.view) return;
-    state.settings.view = d.view; save();
+    state.settings.view = d.view;
+    if (!await save()) return;
     const seg = t.closest('.seg');
     seg.dataset.value = d.view;
     $$('.seg-opt', seg).forEach((b) => b.setAttribute('aria-checked', String(b.dataset.view === d.view)));
@@ -959,80 +806,66 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (d.lead) { draft.lead = Number(d.lead); setPressed('[data-lead]', (b) => b.dataset.lead === d.lead); return; }
-  if (d.soon) { state.settings.soonWindow = Number(d.soon); save(); setPressed('[data-soon]', (b) => b.dataset.soon === d.soon); render({ animate: false }); return; }
-  if (d.deflead) { state.settings.defaultLead = Number(d.deflead); save(); setPressed('[data-deflead]', (b) => b.dataset.deflead === d.deflead); return; }
+  if (d.deflead) { state.settings.defaultLead = Number(d.deflead); if (await save()) setPressed('[data-deflead]', (b) => b.dataset.deflead === d.deflead); return; }
 
   e.preventDefault();
   const s = d.id ? findSub(d.id) : null;
   switch (d.act) {
+    case 'show-more': ui.visibleLimit += 60; renderMain(false); break;
+    case 'retry-load':
+      try { await initStorage(); render(); }
+      catch (error) { toast(error.message || '读取失败，请重试', 'alert'); }
+      break;
     case 'menu': menuOpen() ? closeMenu() : openMenu(); break;
     case 'close': closeSheet(); break;
     case 'add': openEdit(null); break;
-    case 'demo': loadDemo(); break;
+    case 'demo': await loadDemo(); break;
     case 'edit': openEdit(d.id); break;
     case 'back-detail': d.id ? openDetail(d.id) : closeSheet(); break;
-    case 'save-edit': saveEdit(); break;
+    case 'save-edit': await saveEdit(); break;
     case 'pick-icon': readDraftFromForm(); pickIcon(); break;
     case 'clear-icon': draft.icon = ''; $('#icon-pick').innerHTML = iconPickHTML(); break;
     case 'auto-next': readDraftFromForm(); draft.nextManual = false; updateNextAuto(); break;
     case 'renew': openRenew(d.id); break;
-    case 'save-renew': saveRenew(d.id); break;
+    case 'save-renew': await saveRenew(d.id); break;
     case 'rm-hist':
-      if (s && confirm('删除这条续费记录？')) { s.history = s.history.filter((h) => h.id !== d.hid); s.updatedAt = nowStamp(); save(); openDetail(s.id); }
+      if (s && confirm('删除这条续费记录？')) { s.history = s.history.filter((h) => h.id !== d.hid); s.updatedAt = nowStamp(); if (await save()) openDetail(s.id); }
       break;
     case 'toggle-pause':
-      if (s) { s.paused = !s.paused; s.updatedAt = nowStamp(); save(); render({ animate: false }); openDetail(s.id); toast(s.paused ? '已标记停订。之前加过日历提醒的话，记得去「日历」里删掉' : '已恢复续费', s.paused ? 'pause' : 'play'); }
+      if (s) { s.paused = !s.paused; s.updatedAt = nowStamp(); if (await save()) { render({ animate: false }); openDetail(s.id); toast(s.paused ? '已标记停订' : '已恢复续费', s.paused ? 'pause' : 'play'); } }
       break;
     case 'delete':
       if (s && confirm(`删除「${s.name}」和它的全部续费记录？`)) {
         state.subs = state.subs.filter((x) => x.id !== s.id);
         state.deleted.push({ id: s.id, at: nowStamp() });
-        save(); render(); closeSheet(); toast('已删除 ' + s.name, 'trash');
+        if (await save()) { render(); closeSheet(); toast('已删除 ' + s.name, 'trash'); }
       }
       break;
-    case 'ics': if (useSubscription()) openCalSheet(); else if (s) deliverICS([s], `续费提醒-${s.name}.ics`); break;
-    case 'ics-all': {
-      if (useSubscription()) { openCalSheet(); break; }
-      const list = state.subs.filter((x) => !x.paused && x.nextDue);
-      if (!list.length) { toast('没有需要提醒的会员', 'alert'); break; }
-      deliverICS(list, '续费提醒-全部.ics');
-      break;
-    }
-    case 'cal-sub': openCalSheet(); break;
-    case 'copy-cal':
-      try { await navigator.clipboard.writeText('https://' + calendarPath()); toast('订阅链接已复制', 'copy'); } catch (err) { prompt('复制这个订阅链接：', 'https://' + calendarPath()); }
-      break;
-    case 'sync-connect': connectSync(($('#sync-token') || {}).value); break;
-    case 'sync-now': await syncNow(); openSettings(true); toast(syncUI.status === 'ok' ? '已同步' : SYNC_LABEL[syncUI.status], syncUI.status === 'ok' ? 'cloud' : 'alert'); break;
-    case 'sync-off':
-      if (confirm('在这台设备上断开同步？这台设备和 GitHub 上的数据都会保留。')) { sync = null; saveSyncConfig(); render({ animate: false }); openSettings(true); toast('已断开同步'); }
-      break;
     case 'cats': openCats(); break;
-    case 'cat-up': moveCat(d.id, -1); break;
-    case 'cat-down': moveCat(d.id, 1); break;
+    case 'cat-up': await moveCat(d.id, -1); break;
+    case 'cat-down': await moveCat(d.id, 1); break;
     case 'cat-del': {
       const c = state.categories.find((x) => x.id === d.id);
       const n = state.subs.filter((x) => x.categoryId === d.id).length;
       if (c && confirm(n ? `删除大类「${c.name}」？里面的 ${n} 个会员会移到「未分类」。` : `删除大类「${c.name}」？`)) {
         state.categories = state.categories.filter((x) => x.id !== c.id);
         state.deleted.push({ id: c.id, at: nowStamp() });
-        save(); render({ animate: false }); openCats(true);
+        if (await save()) { render({ animate: false }); openCats(true); }
       }
       break;
     }
     case 'settings': openSettings(); break;
-    case 'export': exportBackup(); break;
+    case 'export': await exportBackup(); break;
     case 'import': importBackup(); break;
-    case 'import-merge': mergeState(importBackup.pending); save(); render(); closeSheet(); toast('已合并备份'); break;
+    case 'import-image': importBackupImage(); break;
+    case 'import-text': importBackupText(); break;
+    case 'import-merge': if (importBackup.pending) { mergeState(importBackup.pending); if (await save()) { render(); closeSheet(); toast('已合并备份'); } } break;
     case 'import-replace':
-      if (confirm('确定用备份覆盖这台设备上的全部数据？')) { state = importBackup.pending; save(); render(); closeSheet(); toast('已导入备份'); }
+      if (importBackup.pending && confirm('确定用备份覆盖这台设备上的全部数据？')) { state = importBackup.pending; if (await save()) { render(); closeSheet(); toast('已导入备份'); } }
       break;
     case 'wipe':
-      if (confirm(sync ? '清空全部会员和大类？已开启同步，其他设备上的也会一起清空。此操作不能撤销，建议先导出备份。' : '清空这台设备上的全部会员和大类？此操作不能撤销，建议先导出备份。') && confirm('再确认一次：真的清空吗？')) {
-        // Leave deletion marks so a synced device doesn't bring the records back.
-        const at = nowStamp();
-        const deleted = [...state.subs, ...state.categories].map((x) => ({ id: x.id, at })).concat(state.deleted);
-        const settings = state.settings; state = emptyState(); state.settings = settings; state.deleted = deleted; ui.shown = { monthly: 0, yearly: 0 }; save(); render(); closeSheet(); toast('已清空', 'trash');
+      if (confirm('清空这台设备上的全部会员和大类？此操作不能撤销，建议先导出备份。') && confirm('再确认一次：真的清空吗？')) {
+        const settings = state.settings; state = emptyState(); state.settings = settings; ui.shown = { monthly: 0, yearly: 0 }; if (await save()) { render(); closeSheet(); toast('已清空', 'trash'); }
       }
       break;
   }
@@ -1043,7 +876,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && menuOpen()) closeMenu();
 });
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.closest('#edit-form')) {
     if (t.name === 'categoryId') { $('#new-cat').hidden = t.value !== '__new'; if (t.value === '__new') $('#edit-form [name="newCat"]').focus(); }
@@ -1060,12 +893,12 @@ document.addEventListener('change', (e) => {
   if (t.dataset.catName) {
     const c = state.categories.find((x) => x.id === t.dataset.catName);
     const v = t.value.trim();
-    if (c && v && v !== c.name) { c.name = v; c.updatedAt = nowStamp(); save(); render({ animate: false }); toast('已改名为 ' + v); }
+    if (c && v && v !== c.name) { c.name = v; c.updatedAt = nowStamp(); if (await save()) { render({ animate: false }); toast('已改名为 ' + v); } }
     else if (c && !v) t.value = c.name;
   }
   if (t.dataset.rate) {
     const v = parseFloat(t.value);
-    if (Number.isFinite(v) && v > 0) { state.settings.rates[t.dataset.rate] = v; save(); render({ animate: false }); }
+    if (Number.isFinite(v) && v > 0) { state.settings.rates[t.dataset.rate] = v; if (await save()) render({ animate: false }); }
     else t.value = state.settings.rates[t.dataset.rate];
   }
 });
@@ -1079,19 +912,20 @@ document.addEventListener('input', (e) => {
   }
 });
 
-document.addEventListener('submit', (e) => {
+document.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (e.target.id === 'cat-add') {
     const name = e.target.name.value.trim();
     if (!name) return;
     if (state.categories.some((c) => c.name === name)) { toast('已经有这个大类了', 'alert'); return; }
     state.categories.push({ id: uid(), name, order: state.categories.length, updatedAt: nowStamp() });
-    save(); render({ animate: false }); openCats(true);
+    if (await save()) { render({ animate: false }); openCats(true); }
   }
-  if (e.target.id === 'edit-form') saveEdit();
+  if (e.target.id === 'edit-form') await saveEdit();
 });
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!supportsFlexGap()) document.documentElement.classList.add('no-flex-gap');
   const d = sheet();
   // Tapping the dimmed backdrop, or pressing Esc, closes the sheet with its exit animation.
   d.addEventListener('click', (e) => {
@@ -1099,17 +933,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.target === d && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closeSheet();
   });
   d.addEventListener('cancel', (e) => { e.preventDefault(); closeSheet(); });
-  render();
-  // Refresh the day counts and pull the other device's changes when the app comes back to the foreground.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
-    if (!sheet().open) render({ animate: false });
-    syncNow();
-  });
-  syncNow();
-  setInterval(() => { if (!document.hidden) syncNow(); }, 30000);
-  window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { state = load(); render({ animate: false }); } });
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  try { await initStorage(); }
+  catch (error) {
+    $('#app').innerHTML = `<div class="empty glass"><h2>暂时读不到记录</h2><p>${esc(error.message)}</p><button class="btn btn-primary" data-act="retry-load">重试读取</button></div>`;
+    return;
   }
+  render();
+  // Refresh the day counts when the app comes back to the foreground.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !sheet().open) render({ animate: false }); });
 });
