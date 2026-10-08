@@ -1,6 +1,7 @@
 'use strict';
 
 /* ================= constants ================= */
+const APP_VERSION = 'v8';
 const STORE_KEY = 'xufeibu:v1';
 const CYCLES = {
   week: { label: '周付', unit: '周' },
@@ -27,7 +28,9 @@ const KINDS = {
   sub: { label: '订阅', long: '会员订阅', icon: 'ticket', hint: '按周期续费的会员、软件、云服务' },
   item: { label: '消耗品', long: '消耗品', icon: 'bottle', hint: '化妆品、日用品：记购买日、保质期、用完的时间' }
 };
-const CHART_COLORS = ['#2ed0aa', '#5bb8f5', '#ffb45f', '#ff8b7a', '#a98bf0', '#8fd15c', '#ffd84d', '#6fd6c6', '#f29ec4', '#7fa8f0'];
+// Each slice is a pair: the lighter end starts the gradient, the deeper one ends it.
+const CHART_COLORS = ['#8fb0ee', '#6cc4e6', '#9c8bf2', '#f7b463', '#f2797a', '#6fcf9f', '#f0c04a', '#5fc8c0', '#ef9ec4', '#7f9ff0'];
+const CHART_LIGHTS = ['#c3d6fa', '#a8e0f2', '#cbc0fd', '#ffd79a', '#ffb0ac', '#aee5c6', '#ffe49a', '#a9e5e0', '#f9cbe0', '#bfd0fa'];
 const TABS = [
   { id: 'home', label: '总览', icon: 'home' },
   { id: 'cats', label: '分类', icon: 'layers' },
@@ -846,32 +849,57 @@ function dayEventHTML(e, i) {
 }
 
 /* ================= page: 统计 ================= */
+// Soft-UI charts: a recessed track, a rounded gradient arc, and a glowing cap
+// at the leading end — the look of the neomorphism references.
 function donutHTML(parts, total) {
   const R = 52, C = 2 * Math.PI * R;
+  const GAP = parts.length > 1 ? 2.5 : 0;
   let off = 0;
-  const segs = parts.map((p, i) => {
-    const len = total > 0 ? (p.value / total) * C : 0;
-    const el = `<circle cx="70" cy="70" r="${R}" stroke="${p.color}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" style="--i:${i}"/>`;
-    off += len;
-    return el;
-  }).join('');
+  const arcs = [];
+  const defs = [];
+  parts.forEach((p, i) => {
+    const raw = total > 0 ? (p.value / total) * C : 0;
+    const len = Math.max(0, raw - GAP);
+    if (len > 0) {
+      defs.push(`<linearGradient id="dg${i}" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="${p.light}"/><stop offset="100%" stop-color="${p.color}"/></linearGradient>`);
+      arcs.push(`<circle cx="70" cy="70" r="${R}" stroke="url(#dg${i})" stroke-linecap="round" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" style="--i:${i}"/>`);
+    }
+    off += raw;
+  });
+  // the dot riding the end of the largest slice
+  const lead = total > 0 && parts.length ? (parts[0].value / total) * C - GAP : 0;
+  const ang = (lead / C) * 2 * Math.PI - Math.PI / 2;
+  const cap = lead > 6 ? `<circle class="dcap" cx="${(70 + R * Math.cos(ang)).toFixed(2)}" cy="${(70 + R * Math.sin(ang)).toFixed(2)}" r="5.5"/>` : '';
   return `<div class="donut-wrap">
     <svg viewBox="0 0 140 140" class="donut" role="img" aria-label="各大类每月支出占比">
-      <g transform="rotate(-90 70 70)" fill="none" stroke-width="17">
-        <circle cx="70" cy="70" r="${R}" class="dtrack"/>${segs}
+      <defs>${defs.join('')}
+        <filter id="dshade" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="2.5" stdDeviation="2.5" flood-color="#8294b4" flood-opacity=".35"/>
+        </filter>
+      </defs>
+      <g fill="none" stroke-width="16">
+        <circle cx="70" cy="70" r="${R}" class="dtrack-dark"/>
+        <circle cx="70" cy="70" r="${R}" class="dtrack"/>
       </g>
+      <g transform="rotate(-90 70 70)" fill="none" stroke-width="15" filter="url(#dshade)">${arcs.join('')}</g>
+      ${cap}
     </svg>
     <div class="donut-mid"><span class="k">每月合计</span><span class="v">${yuan(total)}</span></div>
   </div>`;
 }
 function barsHTML(months) {
   const max = Math.max(1, ...months.map((m) => m.total));
-  return `<div class="bars">${months.map((m, i) => `
-    <div class="bar-col" style="--i:${i}">
+  const now = new Date();
+  return `<div class="bars">${months.map((m, i) => {
+    const on = m.m === now.getMonth() && m.y === now.getFullYear();
+    const h = clamp(m.total / max * 100, m.total > 0 ? 6 : 0, 100);
+    return `<div class="bar-col" style="--i:${i}">
       <span class="bar-val">${m.total >= 1 ? fmtNum(Math.round(m.total)) : ''}</span>
-      <span class="bar-stick"><i style="height:${clamp(m.total / max * 100, m.total > 0 ? 4 : 0, 100).toFixed(1)}%"></i></span>
-      <span class="bar-lab${m.m === new Date().getMonth() && m.y === new Date().getFullYear() ? ' on' : ''}">${m.m + 1}月</span>
-    </div>`).join('')}</div>`;
+      <span class="bar-stick">${m.total > 0 ? `<i class="${on ? 'on' : ''}" style="height:${h.toFixed(1)}%"></i>` : ''}</span>
+      <span class="bar-lab${on ? ' on' : ''}">${m.m + 1}月</span>
+    </div>`;
+  }).join('')}</div>`;
 }
 function renderStats(main) {
   const t = totals();
@@ -881,9 +909,12 @@ function renderStats(main) {
   const paid12 = months.reduce((n, m) => n + m.total, 0);
 
   const parts = sortedCategories()
-    .map((c, i) => ({ name: c.name, value: recordsIn(c.id).reduce((n, s) => n + costMonthly(s), 0), color: CHART_COLORS[i % CHART_COLORS.length] }))
+    .map((c) => ({ name: c.name, value: recordsIn(c.id).reduce((n, s) => n + costMonthly(s), 0) }))
     .filter((p) => p.value >= 0.5)
-    .sort((a, b) => b.value - a.value);
+    .sort((a, b) => b.value - a.value)
+    // Colour after sorting, so the biggest slice always gets the first hue and
+    // the legend order matches the ring, largest first.
+    .map((p, i) => ({ ...p, color: CHART_COLORS[i % CHART_COLORS.length], light: CHART_LIGHTS[i % CHART_LIGHTS.length] }));
   const partTotal = parts.reduce((n, p) => n + p.value, 0);
 
   const rank = state.subs.map((s) => ({ s, year: costMonthly(s) * 12 })).filter((x) => x.year >= 1).sort((a, b) => b.year - a.year).slice(0, 5);
@@ -905,7 +936,7 @@ function renderStats(main) {
       <div class="block-head"><h2>钱花在哪一类</h2><span class="block-sub">按每月摊到的钱算</span></div>
       ${parts.length ? `<div class="chart glass chart-donut">
         ${donutHTML(parts, partTotal)}
-        <ul class="legend">${parts.map((p) => `<li><i style="background:${p.color}"></i><span class="lg-name">${esc(p.name)}</span><span class="lg-val num">${yuan(p.value)}</span><span class="lg-pct num">${partTotal ? Math.round(p.value / partTotal * 100) : 0}%</span></li>`).join('')}</ul>
+        <ul class="legend">${parts.map((p) => `<li><i style="background:linear-gradient(135deg,${p.light},${p.color})"></i><span class="lg-name">${esc(p.name)}</span><span class="lg-val num">${yuan(p.value)}</span><span class="lg-pct num">${partTotal ? Math.round(p.value / partTotal * 100) : 0}%</span></li>`).join('')}</ul>
       </div>` : '<p class="hollow glass">还没有能算出每月花费的记录。</p>'}
     </section>
 
@@ -1425,6 +1456,10 @@ function openSettings(still = false) {
     <div class="field" style="margin-top:18px"><span class="field-label">数据</span>
       <span class="field-hint">${sync ? '数据保存在这台设备上，并同步到你的 GitHub。' : '数据只保存在这台设备里。换设备或清理浏览器数据前，记得先「导出备份」。'}</span>
       <div class="choice-row" style="margin-top:6px"><button class="btn btn-sm" data-act="export">${icon('upload', 16)}导出备份</button><button class="btn btn-sm" data-act="import">${icon('download', 16)}导入备份</button><button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 16)}清空全部数据</button></div>
+    </div>
+    <div class="field" style="margin-top:18px"><span class="field-label">版本</span>
+      <span class="field-hint">当前版本 <b class="num">${APP_VERSION}</b>。手机上看不到新改动的话，点下面这个按钮强制更新。</span>
+      <div class="choice-row" style="margin-top:6px"><button class="btn btn-sm" data-act="force-update">${icon('renew', 16)}检查更新</button></div>
     </div>`;
   openSheet('设置', body, '', { still });
 }
@@ -1767,6 +1802,18 @@ document.addEventListener('click', async (e) => {
     case 'import-replace':
       if (confirm('确定用备份覆盖这台设备上的全部数据？')) { state = importBackup.pending; save(); render(); closeSheet(); toast('已导入备份'); }
       break;
+    case 'force-update':
+      // Drop every cached copy and re-register, so the next load is definitely the new build.
+      toast('正在检查更新…', 'renew');
+      try {
+        if (window.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+        if (navigator.serviceWorker) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map((r) => r.unregister()));
+        }
+      } catch (err) { /* private mode or unsupported: a plain reload still helps */ }
+      setTimeout(() => location.reload(true), 400);
+      break;
     case 'wipe':
       if (confirm(sync ? '清空全部记录和大类？已开启同步，其他设备上的也会一起清空。此操作不能撤销，建议先导出备份。' : '清空这台设备上的全部记录和大类？此操作不能撤销，建议先导出备份。') && confirm('再确认一次：真的清空吗？')) {
         // Leave deletion marks so a synced device doesn't bring the records back.
@@ -1864,6 +1911,25 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(() => { if (!document.hidden) syncNow(); }, 30000);
   window.addEventListener('storage', (e) => { if (e.key === STORE_KEY) { state = load(); render({ animate: false }); } });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // Take over as soon as a new build is ready, instead of waiting for every
+      // tab to close — otherwise a deploy looks like "nothing changed".
+      const nudge = (w) => w && w.addEventListener('statechange', () => {
+        if (w.state === 'installed' && navigator.serviceWorker.controller) w.postMessage('skip-waiting');
+      });
+      if (reg.waiting) reg.waiting.postMessage('skip-waiting');
+      nudge(reg.installing);
+      reg.addEventListener('updatefound', () => nudge(reg.installing));
+      reg.update().catch(() => {});
+      // Check again whenever the app comes back to the foreground.
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+    // The new worker activated: reload once so the fresh code is actually running.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
   }
 });
